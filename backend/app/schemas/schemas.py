@@ -31,6 +31,7 @@ class ForgotPasswordRequest(BaseModel):
 
 
 class TeacherProfileUpdate(BaseModel):
+    email: EmailStr | None = None
     full_name: str | None = None
     display_name: str | None = None
     school_name: str | None = None

@@ -131,6 +131,14 @@ def update_profile(
         profile = TeacherProfile(user_id=current_teacher.id, display_name=current_teacher.full_name)
         db.add(profile)
 
+    if payload.email:
+        new_email = payload.email.lower().strip()
+        if new_email != current_teacher.email:
+            dup = db.query(User).filter(User.email == new_email, User.id != current_teacher.id).first()
+            if dup:
+                raise HTTPException(status_code=409, detail="อีเมลนี้ถูกใช้งานโดยบัญชีอื่นแล้ว")
+            current_teacher.email = new_email
+
     if payload.full_name:
         current_teacher.full_name = payload.full_name.strip()
         profile.display_name = payload.full_name.strip()

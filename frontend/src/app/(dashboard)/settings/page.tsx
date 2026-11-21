@@ -12,6 +12,7 @@ export default function SettingsPage() {
   const { toast } = useToast();
 
   const [profile, setProfile] = useState({
+    email: "",
     full_name: "",
     school_name: "",
     department: "",
@@ -25,6 +26,7 @@ export default function SettingsPage() {
   useEffect(() => {
     if (teacher) {
       setProfile({
+        email: teacher.email || "",
         full_name: teacher.full_name || "",
         school_name: teacher.school_name || "",
         department: teacher.department || "",
@@ -88,6 +90,10 @@ export default function SettingsPage() {
         </h2>
         <form onSubmit={handleSaveProfile} className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs font-semibold">อีเมลเข้าสู่ระบบ</label>
+              <Input type="email" required value={profile.email} onChange={(e) => setProfile({ ...profile, email: e.target.value })} />
+            </div>
             <div>
               <label className="mb-1 block text-xs font-semibold">ชื่อ-นามสกุล</label>
               <Input required value={profile.full_name} onChange={(e) => setProfile({ ...profile, full_name: e.target.value })} />
