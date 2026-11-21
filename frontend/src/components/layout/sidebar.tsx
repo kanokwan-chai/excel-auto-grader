@@ -16,6 +16,7 @@ import {
   LogOut,
   Menu,
   Scale,
+  Send,
   Settings,
   Users,
   X,
@@ -26,6 +27,7 @@ import { useAuth } from "@/hooks/use-auth";
 const NAV_ITEMS = [
   { href: "/dashboard", label: "ภาพรวม", icon: LayoutDashboard, accent: "text-violet-600 bg-violet-100" },
   { href: "/google-classroom", label: "Google Classroom", icon: GraduationCap, accent: "text-sky-600 bg-sky-100" },
+  { href: "/classroom-create", label: "สร้างงานลง Classroom", icon: Send, accent: "text-emerald-600 bg-emerald-100" },
   { href: "/google-accounts", label: "บัญชี Google", icon: Link2, accent: "text-pink-600 bg-pink-100" },
   { href: "/classes", label: "ชั้นเรียนของฉัน", icon: BookOpen, accent: "text-emerald-600 bg-emerald-100" },
   { href: "/students", label: "รายชื่อนักเรียน", icon: Users, accent: "text-amber-600 bg-amber-100" },

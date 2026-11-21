@@ -20,6 +20,7 @@ from backend.app.core.database import get_db
 from backend.app.core.storage import storage_service
 from backend.app.integrations.google_classroom import (
     GoogleAPIError,
+    create_classroom_coursework,
     download_drive_excel_file,
     fetch_classroom_courses,
     fetch_course_students,
@@ -280,6 +281,103 @@ async def sync_course_assignments(
 
     db.commit()
     return {"synced_students": len(students), "synced_assignments": synced_cw}
+
+
+@router.post("/courses/{classroom_id}/assignments")
+async def create_and_post_classroom_assignment(
+    classroom_id: str,
+    payload: dict,
+    current_teacher: User = Depends(get_current_teacher),
+    db: Session = Depends(get_db),
+):
+    """Create and post a new Assignment directly to Google Classroom (enables automatic grade pushing)."""
+    title = str(payload.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="กรุณาระบุชื่องาน")
+
+    gc = (
+        db.query(GoogleClassroom)
+        .filter(GoogleClassroom.id == classroom_id, GoogleClassroom.owner_user_id == current_teacher.id)
+        .first()
+    )
+    if not gc:
+        raise HTTPException(status_code=404, detail="ไม่พบห้องเรียน Google Classroom ที่เลือก")
+
+    conn = (
+        db.query(GoogleConnection)
+        .filter(GoogleConnection.id == gc.google_connection_id, GoogleConnection.owner_user_id == current_teacher.id)
+        .first()
+    )
+    if not conn:
+        raise HTTPException(status_code=404, detail="ไม่พบบัญชี Google เจ้าของห้องเรียน")
+
+    description = payload.get("description")
+    max_points = float(payload.get("max_points") or 20.0)
+    state = str(payload.get("state") or "PUBLISHED").upper()
+    due_at = None
+    if payload.get("due_at"):
+        try:
+            due_at = datetime.fromisoformat(str(payload["due_at"]).replace("Z", "+00:00"))
+        except ValueError:
+            due_at = None
+
+    try:
+        cw = await create_classroom_coursework(
+            db=db,
+            conn=conn,
+            course_id=gc.google_course_id,
+            title=title,
+            description=description,
+            max_points=max_points,
+            due_at=due_at,
+            state=state,
+        )
+    except GoogleAPIError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message)
+
+    now = datetime.now(timezone.utc)
+    ca = ClassroomAssignment(
+        owner_user_id=current_teacher.id,
+        google_connection_id=conn.id,
+        google_classroom_id=gc.id,
+        google_assignment_id=str(cw["id"]),
+        title=cw.get("title", title),
+        description=cw.get("description") or description,
+        state=cw.get("state", state),
+        max_points=float(cw.get("maxPoints") or max_points),
+        due_at=due_at,
+        alternate_link=cw.get("alternateLink"),
+        last_synced_at=now,
+    )
+    db.add(ca)
+    db.flush()
+
+    local_a = Assignment(
+        owner_user_id=current_teacher.id,
+        classroom_assignment_id=ca.id,
+        title=ca.title,
+        description=ca.description,
+        max_score=ca.max_points or max_points,
+        pass_score=round((ca.max_points or max_points) * 0.5, 2),
+        due_at=due_at,
+        status="published" if state == "PUBLISHED" else "draft",
+    )
+    db.add(local_a)
+    db.flush()
+    ca.local_assignment_id = local_a.id
+    db.commit()
+    db.refresh(ca)
+
+    return {
+        "id": ca.id,
+        "local_assignment_id": local_a.id,
+        "google_assignment_id": ca.google_assignment_id,
+        "title": ca.title,
+        "state": ca.state,
+        "max_points": ca.max_points,
+        "alternate_link": ca.alternate_link,
+        "message": "สร้างและโพสต์งานลง Google Classroom เรียบร้อยแล้ว! งานนี้รองรับการส่งคะแนนกลับเข้า Classroom อัตโนมัติ 100%",
+    }
 
 
 @router.get("/courses/{classroom_id}/assignments")

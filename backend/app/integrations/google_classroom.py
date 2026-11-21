@@ -388,3 +388,50 @@ async def push_grade_to_classroom(
             )
 
         return resp.json()
+
+
+async def create_classroom_coursework(
+    db: Session,
+    conn: GoogleConnection,
+    course_id: str,
+    title: str,
+    description: str | None = None,
+    max_points: float = 20.0,
+    due_at: datetime | None = None,
+    state: str = "PUBLISHED",
+) -> dict[str, Any]:
+    """Create a real Assignment (courseWork) in Google Classroom via official API.
+    Assignments created via this app allow 100% automatic grade pushing (draftGrade / assignedGrade / return).
+    """
+    token = await ensure_valid_access_token(db, conn)
+    body: dict[str, Any] = {
+        "title": title.strip(),
+        "workType": "ASSIGNMENT",
+        "maxPoints": float(max_points),
+        "state": state if state in ("PUBLISHED", "DRAFT") else "PUBLISHED",
+    }
+    if description:
+        body["description"] = description.strip()
+    if due_at:
+        utc_dt = due_at.astimezone(timezone.utc) if due_at.tzinfo else due_at.replace(tzinfo=timezone.utc)
+        body["dueDate"] = {"year": utc_dt.year, "month": utc_dt.month, "day": utc_dt.day}
+        body["dueTime"] = {"hours": utc_dt.hour, "minutes": utc_dt.minute}
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.post(
+            f"{CLASSROOM_API_BASE}/courses/{course_id}/courseWork",
+            json=body,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        )
+        if resp.status_code == 403:
+            raise GoogleAPIError(
+                "บัญชี Google นี้ยังไม่มีสิทธิ์สร้างงาน (กรุณาเพิ่ม Scope classroom.coursework.students ใน Google Cloud แล้วเชื่อมต่อบัญชี Google ใหม่ 1 ครั้ง)",
+                status_code=403,
+                code="CLASSROOM_WRITE_SCOPE_MISSING",
+            )
+        if resp.status_code != 200:
+            raise GoogleAPIError(
+                f"สร้างงานใน Google Classroom ไม่สำเร็จ (HTTP {resp.status_code}): {resp.text}",
+                status_code=resp.status_code,
+            )
+        return resp.json()
