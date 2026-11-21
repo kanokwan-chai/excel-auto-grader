@@ -25,9 +25,12 @@ settings = get_settings()
 
 
 def sanitize_filename(filename: str) -> str:
+    """Produce a 100% ASCII-safe filename for Supabase Storage object keys (preserves extension)."""
     name = os.path.basename(filename).strip()
-    name = re.sub(r"[^\w.\-\u0E00-\u0E7F]", "_", name)
-    return name[:180] or "file.xlsx"
+    _, ext = os.path.splitext(name)
+    safe_ext = re.sub(r"[^a-zA-Z0-9.]", "", ext.lower())[:10] or ".xlsx"
+    stem = re.sub(r"[^a-zA-Z0-9_-]", "", os.path.splitext(name)[0])[:40]
+    return f"{stem}_{uuid.uuid4().hex[:10]}{safe_ext}" if stem else f"file_{uuid.uuid4().hex[:12]}{safe_ext}"
 
 
 class StorageService:
@@ -36,7 +39,7 @@ class StorageService:
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def build_tenant_path(self, user_id: str, folder: StorageFolder, filename: str) -> str:
-        safe_name = f"{uuid.uuid4().hex[:12]}_{sanitize_filename(filename)}"
+        safe_name = sanitize_filename(filename)
         return f"users/{user_id}/{folder}/{safe_name}"
 
     def assert_tenant_ownership(self, storage_path: str, user_id: str) -> None:

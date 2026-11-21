@@ -256,13 +256,15 @@ def get_grading_result_detail(
 
 
 @router.get("/results/{result_id}/preview")
-def get_grading_result_excel_preview(
+async def get_grading_result_excel_preview(
     result_id: str,
     current_teacher: User = Depends(get_current_teacher),
     db: Session = Depends(get_db),
 ):
     """Return an interactive Excel-like grid preview (values, formulas, colors, borders, merges, charts, error cells)."""
     from openpyxl.utils import get_column_letter
+    from backend.app.integrations.google_classroom import download_drive_excel_file
+    from backend.app.models.models import GoogleConnection
 
     gr = (
         db.query(GradingResult)
@@ -289,14 +291,41 @@ def get_grading_result_excel_preview(
                 SubmissionFile.submission_id == gr.submission_id,
                 SubmissionFile.owner_user_id == current_teacher.id,
             )
-            .order_by(SubmissionFile.is_primary.desc())
+            .order_by(SubmissionFile.is_primary.desc(), SubmissionFile.created_at.desc())
             .first()
         )
     if not sub_file:
         raise HTTPException(status_code=404, detail="ไม่พบไฟล์ Excel สำหรับพรีวิว")
 
     try:
-        local_path = storage_service.get_local_path(sub_file.storage_path, current_teacher.id)
+        try:
+            local_path = storage_service.get_local_path(sub_file.storage_path, current_teacher.id)
+        except FileNotFoundError:
+            # Auto-recover from Google Drive if this file came from Google Classroom and Render disk restarted
+            if not sub_file.google_drive_file_id:
+                raise
+            conn = (
+                db.query(GoogleConnection)
+                .filter(
+                    GoogleConnection.owner_user_id == current_teacher.id,
+                    GoogleConnection.deleted_at.is_(None),
+                )
+                .order_by(GoogleConnection.is_default.desc())
+                .first()
+            )
+            if not conn:
+                raise
+            content, _ = await download_drive_excel_file(db, conn, sub_file.google_drive_file_id)
+            new_path = storage_service.save_bytes(
+                user_id=current_teacher.id,
+                folder="submissions",
+                filename=sub_file.original_filename,
+                content=content,
+            )
+            sub_file.storage_path = new_path
+            db.commit()
+            local_path = storage_service.get_local_path(new_path, current_teacher.id)
+
         loaded = load_workbooks(local_path)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"ไม่สามารถเปิดไฟล์ Excel เพื่อพรีวิวได้: {exc}")
