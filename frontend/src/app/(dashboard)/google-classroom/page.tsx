@@ -69,9 +69,42 @@ export default function GoogleClassroomWizardPage() {
     failed_count: number;
   } | null>(null);
 
+  const [recentJobs, setRecentJobs] = useState<
+    {
+      id: string;
+      assignment_title: string;
+      status: string;
+      total_files: number;
+      processed_files: number;
+      failed_files: number;
+      started_at?: string | null;
+      completed_at?: string | null;
+    }[]
+  >([]);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { toast } = useToast();
+
+  const loadRecentJobs = async () => {
+    try {
+      const h = await apiRequest<{
+        jobs: {
+          id: string;
+          assignment_title: string;
+          status: string;
+          total_files: number;
+          processed_files: number;
+          failed_files: number;
+          started_at?: string | null;
+          completed_at?: string | null;
+        }[];
+      }>("/grading/history");
+      setRecentJobs((h.jobs || []).slice(0, 3));
+    } catch {
+      // ignore
+    }
+  };
 
   useEffect(() => {
     Promise.all([
@@ -85,6 +118,7 @@ export default function GoogleClassroomWizardPage() {
         if (rubRes.length > 0) setSelectedRubricId(rubRes[0].id);
       })
       .catch((err) => setError(err instanceof Error ? err.message : "โหลดข้อมูลเริ่มต้นไม่สำเร็จ"));
+    loadRecentJobs();
   }, []);
 
   const loadCourses = async (connId: string, syncFirst = false) => {
@@ -204,6 +238,43 @@ export default function GoogleClassroomWizardPage() {
           ขั้นตอนแบบ Wizard 8 ขั้น รองรับหลายบัญชี Google และเลือกไฟล์ Excel จาก Google Drive จริง
         </p>
       </div>
+
+      {/* Active / Recent Grading Jobs Banner (so accidental refresh/exit never loses track!) */}
+      {recentJobs.length > 0 && (
+        <Card className="p-4 bg-gradient-to-r from-violet-50/80 to-sky-50/70 border-violet-200 space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-bold text-violet-950">
+              สถานะงานที่กำลังตรวจ / รอบตรวจล่าสุด (หากเผลอกดออก งานยังคงตรวจต่อและดูผลได้ที่นี่)
+            </p>
+            <Button size="sm" variant="outline" onClick={loadRecentJobs}>
+              <RefreshCw className="h-3 w-3" /> รีเฟรชสถานะ
+            </Button>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-3">
+            {recentJobs.map((j) => (
+              <div
+                key={j.id}
+                className="flex items-center justify-between gap-2 rounded-2xl border border-violet-100 bg-white px-3 py-2 text-xs"
+              >
+                <div className="min-w-0">
+                  <p className="truncate font-semibold text-violet-950">{j.assignment_title}</p>
+                  <p className="text-[11px] text-slate-500">
+                    {j.processed_files}/{j.total_files} ไฟล์ • {formatThaiDate(j.completed_at || j.started_at)}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <Badge tone={j.status === "completed" ? "mint" : j.status === "processing" ? "amber" : "sky"}>
+                    {j.status === "processing" ? "กำลังตรวจ..." : j.status}
+                  </Badge>
+                  <Link href="/reports">
+                    <Button size="sm" variant="secondary">ดูผล</Button>
+                  </Link>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {/* 8-Step Progress Indicator */}
       <Card className="p-4">
