@@ -40,7 +40,10 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> list[str]:
-        return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+        origins = {o.strip().rstrip("/") for o in self.CORS_ORIGINS.split(",") if o.strip()}
+        if self.FRONTEND_URL.strip():
+            origins.add(self.FRONTEND_URL.strip().rstrip("/"))
+        return sorted(origins)
 
     @property
     def google_oauth_configured(self) -> bool:
@@ -48,7 +51,10 @@ class Settings(BaseSettings):
 
     @property
     def supabase_configured(self) -> bool:
-        return bool(self.SUPABASE_URL and self.SUPABASE_JWT_SECRET)
+        return bool(
+            self.SUPABASE_URL
+            and (self.SUPABASE_SERVICE_ROLE_KEY or self.SUPABASE_ANON_KEY or self.SUPABASE_JWT_SECRET)
+        )
 
 
 @lru_cache

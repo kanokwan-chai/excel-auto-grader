@@ -56,10 +56,22 @@ app.include_router(reports.router, prefix=API_PREFIX)
 
 @app.get("/health")
 def health_check():
+    from sqlalchemy import text
+    from backend.app.core.database import SessionLocal
+
+    db_ok = False
+    try:
+        with SessionLocal() as db:
+            db.execute(text("SELECT 1"))
+            db_ok = True
+    except Exception:
+        db_ok = False
+
     return {
-        "status": "ok",
+        "status": "ok" if db_ok else "degraded",
         "service": "excel-auto-grader-backend",
         "version": "2.0.0",
+        "database_connected": db_ok,
         "google_oauth_configured": settings.google_oauth_configured,
         "supabase_configured": settings.supabase_configured,
     }
