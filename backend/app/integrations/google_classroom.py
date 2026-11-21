@@ -33,14 +33,14 @@ GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 CLASSROOM_API_BASE = "https://classroom.googleapis.com/v1"
 DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
 
-# Minimal necessary read-only scopes for Excel Auto Grader
+# Minimal necessary scopes for Excel Auto Grader (includes coursework.students for pushing approved grades)
 REQUIRED_SCOPES = [
     "openid",
     "email",
     "profile",
     "https://www.googleapis.com/auth/classroom.courses.readonly",
     "https://www.googleapis.com/auth/classroom.rosters.readonly",
-    "https://www.googleapis.com/auth/classroom.coursework.students.readonly",
+    "https://www.googleapis.com/auth/classroom.coursework.students",
     "https://www.googleapis.com/auth/drive.readonly",
 ]
 
@@ -331,3 +331,60 @@ async def download_drive_excel_file(
                 status_code=resp.status_code,
             )
         return resp.content, ext
+
+
+async def push_grade_to_classroom(
+    db: Session,
+    conn: GoogleConnection,
+    course_id: str,
+    coursework_id: str,
+    submission_id: str,
+    score: float,
+    return_to_student: bool = False,
+) -> dict[str, Any]:
+    """
+    Push an approved score (draftGrade & assignedGrade) to Google Classroom API.
+    Note: Google Classroom API only allows modifying grades for coursework created by the same OAuth project;
+    if Google returns 403 ProjectPermissionDenied, raises GoogleAPIError with a clear Thai explanation.
+    """
+    token = await ensure_valid_access_token(db, conn)
+    url = f"{CLASSROOM_API_BASE}/courses/{course_id}/courseWork/{coursework_id}/studentSubmissions/{submission_id}"
+    payload: dict[str, Any] = {"draftGrade": score}
+    update_mask = "draftGrade"
+    if return_to_student:
+        payload["assignedGrade"] = score
+        update_mask = "draftGrade,assignedGrade"
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.patch(
+            url,
+            params={"updateMask": update_mask},
+            json=payload,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        )
+        if resp.status_code == 403:
+            body = resp.text
+            if "ProjectPermissionDenied" in body or "not owned by" in body:
+                raise GoogleAPIError(
+                    "Google Classroom ไม่อนุญาตให้แอปภายนอกเขียนคะแนนทับงานที่ครูสร้างเองในหน้า Classroom (ข้อจำกัดของ Google API) — แต่ระบบอนุมัติคะแนนและสร้างคอมเมนต์กระชับให้คัดลอกวางเรียบร้อยแล้ว",
+                    status_code=403,
+                    code="CLASSROOM_PROJECT_PERMISSION_DENIED",
+                )
+            raise GoogleAPIError(
+                "บัญชี Google ยังไม่มีสิทธิ์ส่งคะแนน (กรุณาเพิ่ม Scope classroom.coursework.students ใน Google Cloud แล้วเชื่อมต่อบัญชี Google ใหม่ 1 ครั้ง)",
+                status_code=403,
+                code="CLASSROOM_WRITE_SCOPE_MISSING",
+            )
+        if resp.status_code != 200:
+            raise GoogleAPIError(
+                f"ส่งคะแนนเข้า Google Classroom ไม่สำเร็จ (HTTP {resp.status_code}): {resp.text}",
+                status_code=resp.status_code,
+            )
+
+        if return_to_student:
+            await client.post(
+                f"{url}:return",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        return resp.json()

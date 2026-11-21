@@ -27,6 +27,7 @@ from backend.app.integrations.google_classroom import (
     fetch_drive_file_metadata,
     fetch_student_submissions,
     is_supported_excel_attachment,
+    push_grade_to_classroom,
 )
 from backend.app.models.models import (
     Assignment,
@@ -35,7 +36,9 @@ from backend.app.models.models import (
     ClassroomSubmission,
     GoogleClassroom,
     GoogleConnection,
+    GradeAdjustment,
     GradingJob,
+    GradingResult,
     GradingRubric,
     Submission,
     SubmissionFile,
@@ -717,3 +720,118 @@ async def run_classroom_wizard_grading(
         "failed_count": failed,
         "result_ids": graded_results,
     }
+
+
+def _build_concise_feedback_th(gr: GradingResult) -> str:
+    passed_titles = [d.item_title for d in gr.details if d.passed]
+    deducted_parts = [
+        f"{d.item_title} (-{d.deducted_points:g}: {d.reason or 'ไม่ตรงเกณฑ์'})"
+        for d in gr.details
+        if d.deducted_points > 0
+    ]
+    parts = [f"คะแนน {gr.final_score:g}/{gr.max_score:g} ({gr.percentage:g}%)"]
+    if passed_titles:
+        parts.append("ผ่าน: " + ", ".join(passed_titles[:5]))
+    if deducted_parts:
+        parts.append("ถูกหัก: " + "; ".join(deducted_parts[:5]))
+    else:
+        parts.append("ทำถูกต้องครบทุกเกณฑ์ ยอดเยี่ยมมาก!")
+    return " | ".join(parts)
+
+
+@router.post("/results/{result_id}/approve-and-push")
+async def approve_and_push_grade_to_classroom(
+    result_id: str,
+    payload: dict | None = None,
+    current_teacher: User = Depends(get_current_teacher),
+    db: Session = Depends(get_db),
+):
+    """
+    Approve/confirm a student's grading result, save concise Thai feedback comment,
+    and push the score (draftGrade / assignedGrade) to Google Classroom if linked.
+    """
+    body = payload or {}
+    return_to_student = bool(body.get("return_to_student", False))
+    custom_comment = (body.get("comment") or "").strip()
+
+    gr = (
+        db.query(GradingResult)
+        .filter(GradingResult.id == result_id, GradingResult.owner_user_id == current_teacher.id)
+        .first()
+    )
+    if not gr:
+        raise HTTPException(status_code=404, detail="ไม่พบผลการตรวจ")
+
+    concise_comment = custom_comment or _build_concise_feedback_th(gr)
+    gr.teacher_comment = concise_comment
+    gr.is_confirmed = True
+    gr.status = "confirmed"
+    gr.confirmed_at = datetime.now(timezone.utc)
+    gr.confirmed_by = current_teacher.id
+
+    db.add(
+        GradeAdjustment(
+            owner_user_id=current_teacher.id,
+            grading_result_id=gr.id,
+            adjusted_by=current_teacher.id,
+            rubric_version_id=gr.rubric_version_id,
+            previous_score=gr.final_score,
+            new_score=gr.final_score,
+            reason=f"อนุมัติคะแนน: {concise_comment[:200]}",
+            action_type="confirm",
+        )
+    )
+    db.commit()
+
+    # Check if linked to Google Classroom submission
+    cs = (
+        db.query(ClassroomSubmission)
+        .filter(
+            ClassroomSubmission.local_submission_id == gr.submission_id,
+            ClassroomSubmission.owner_user_id == current_teacher.id,
+        )
+        .first()
+    )
+    if not cs:
+        return {
+            "confirmed": True,
+            "pushed_to_classroom": False,
+            "concise_comment": concise_comment,
+            "classroom_message": "อนุมัติคะแนนเรียบร้อยแล้ว (งานนี้ไม่ได้เชื่อมต่อจาก Google Classroom — สามารถคัดลอกคอมเมนต์ไปวางได้เลย)",
+        }
+
+    ca = db.query(ClassroomAssignment).filter(ClassroomAssignment.id == cs.classroom_assignment_id).first()
+    gc = db.query(GoogleClassroom).filter(GoogleClassroom.id == ca.google_classroom_id).first() if ca else None
+    conn = db.query(GoogleConnection).filter(GoogleConnection.id == cs.google_connection_id).first()
+
+    if not ca or not gc or not conn:
+        return {
+            "confirmed": True,
+            "pushed_to_classroom": False,
+            "concise_comment": concise_comment,
+            "classroom_message": "อนุมัติคะแนนเรียบร้อยแล้ว (ไม่พบข้อมูลการเชื่อมต่อ Google Classroom)",
+        }
+
+    try:
+        await push_grade_to_classroom(
+            db=db,
+            conn=conn,
+            course_id=gc.google_course_id,
+            coursework_id=ca.google_assignment_id,
+            submission_id=cs.google_submission_id,
+            score=float(gr.final_score),
+            return_to_student=return_to_student,
+        )
+        return {
+            "confirmed": True,
+            "pushed_to_classroom": True,
+            "concise_comment": concise_comment,
+            "classroom_message": "อนุมัติและส่งคะแนนเข้า Google Classroom สำเร็จแล้ว! (สามารถกดคัดลอกคอมเมนต์ไปวางในช่อง Private Comment ของ Classroom ได้ทันที)",
+        }
+    except GoogleAPIError as exc:
+        return {
+            "confirmed": True,
+            "pushed_to_classroom": False,
+            "concise_comment": concise_comment,
+            "classroom_message": exc.message,
+        }

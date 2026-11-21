@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { CheckCircle2, Download, Edit3, Eye, FileDown, ShieldCheck, Unlock } from "lucide-react";
+import { CheckCircle2, ClipboardCopy, Download, Edit3, Eye, FileDown, Send, ShieldCheck, Unlock } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { apiRequest, downloadFileFromApi } from "@/lib/api";
 import type { AssignmentItem, GradingResultDetail } from "@/types";
@@ -17,6 +17,7 @@ import {
   Modal,
   Select,
   Skeleton,
+  Textarea,
 } from "@/components/ui/primitives";
 
 interface ClassReportResponse {
@@ -65,7 +66,22 @@ export default function ReportsPage() {
   const [adjustScore, setAdjustScore] = useState("");
   const [adjustReason, setAdjustReason] = useState("");
   const [savingAdjust, setSavingAdjust] = useState(false);
+  const [conciseComment, setConciseComment] = useState("");
+  const [pushingClassroom, setPushingClassroom] = useState(false);
+  const [pushFeedbackMsg, setPushFeedbackMsg] = useState<string | null>(null);
   const { toast } = useToast();
+
+  const buildDefaultConciseComment = (d: GradingResultDetail) => {
+    const passed = d.details.filter((x) => x.passed).map((x) => x.item_title);
+    const deducted = d.details
+      .filter((x) => x.deducted_points > 0)
+      .map((x) => `${x.item_title} (-${x.deducted_points}: ${x.reason || "ไม่ตรงเกณฑ์"})`);
+    const parts = [`ได้ ${d.final_score}/${d.max_score} คะแนน (${d.percentage}%)`];
+    if (passed.length > 0) parts.push(`ผ่าน: ${passed.slice(0, 5).join(", ")}`);
+    if (deducted.length > 0) parts.push(`ถูกหัก: ${deducted.slice(0, 5).join("; ")}`);
+    else parts.push("ทำถูกต้องครบทุกเกณฑ์ ยอดเยี่ยมมาก!");
+    return parts.join(" | ");
+  };
 
   useEffect(() => {
     apiRequest<AssignmentItem[]>("/assignments")
@@ -112,6 +128,8 @@ export default function ReportsPage() {
       setExcelPreview(prev);
       setAdjustScore(String(d.final_score));
       setAdjustReason("");
+      setConciseComment(d.teacher_comment || buildDefaultConciseComment(d));
+      setPushFeedbackMsg(null);
     } catch (err) {
       toast(err instanceof Error ? err.message : "โหลดรายละเอียดคะแนนไม่สำเร็จ", "error");
     } finally {
@@ -135,6 +153,47 @@ export default function ReportsPage() {
       toast(err instanceof Error ? err.message : "ปรับคะแนนไม่สำเร็จ", "error");
     } finally {
       setSavingAdjust(false);
+    }
+  };
+
+  const handleApproveAndPush = async (returnToStudent: boolean) => {
+    if (!detail) return;
+    setPushingClassroom(true);
+    setPushFeedbackMsg(null);
+    try {
+      const res = await apiRequest<{
+        confirmed: boolean;
+        pushed_to_classroom: boolean;
+        concise_comment: string;
+        classroom_message: string;
+      }>(`/classroom/results/${detail.id}/approve-and-push`, {
+        method: "POST",
+        body: JSON.stringify({
+          comment: conciseComment,
+          return_to_student: returnToStudent,
+        }),
+      });
+      setPushFeedbackMsg(res.classroom_message);
+      toast(
+        res.pushed_to_classroom ? "อนุมัติและส่งคะแนนเข้า Google Classroom สำเร็จ!" : "อนุมัติคะแนนและบันทึกคอมเมนต์แล้ว",
+        res.pushed_to_classroom ? "success" : "info"
+      );
+      await openStudentDetail(detail.id);
+      setPushFeedbackMsg(res.classroom_message);
+      loadReport();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "ส่งคะแนนไม่สำเร็จ", "error");
+    } finally {
+      setPushingClassroom(false);
+    }
+  };
+
+  const handleCopyComment = async () => {
+    try {
+      await navigator.clipboard.writeText(conciseComment);
+      toast("คัดลอกคอมเมนต์กระชับแล้ว (นำไปวางใน Google Classroom ได้เลย)");
+    } catch {
+      toast("ไม่สามารถคัดลอกได้", "error");
     }
   };
 
@@ -399,6 +458,48 @@ export default function ReportsPage() {
                       ))}
                     </tbody>
                   </table>
+                </div>
+
+                {/* Approve & Push to Google Classroom with Concise Feedback Comment */}
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-3.5 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="flex items-center gap-1.5 text-xs font-bold text-emerald-950">
+                      <Send className="h-3.5 w-3.5 text-emerald-600" />
+                      อนุมัติและส่งคะแนนเข้า Google Classroom + คอมเมนต์กระชับ
+                    </p>
+                    <Button size="sm" variant="outline" onClick={handleCopyComment}>
+                      <ClipboardCopy className="h-3 w-3" /> คัดลอกคอมเมนต์
+                    </Button>
+                  </div>
+                  <Textarea
+                    rows={3}
+                    value={conciseComment}
+                    onChange={(e) => setConciseComment(e.target.value)}
+                    className="text-xs"
+                    placeholder="คอมเมนต์กระชับอธิบายเหตุผลคะแนน..."
+                  />
+                  {pushFeedbackMsg && (
+                    <p className="rounded-xl bg-white px-3 py-2 text-[11px] text-emerald-900 border border-emerald-200">
+                      {pushFeedbackMsg}
+                    </p>
+                  )}
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <Button
+                      size="sm"
+                      variant="mint"
+                      loading={pushingClassroom}
+                      onClick={() => handleApproveAndPush(false)}
+                    >
+                      <ShieldCheck className="h-3.5 w-3.5" /> อนุมัติและส่งคะแนน (Draft)
+                    </Button>
+                    <Button
+                      size="sm"
+                      loading={pushingClassroom}
+                      onClick={() => handleApproveAndPush(true)}
+                    >
+                      <Send className="h-3.5 w-3.5" /> อนุมัติและคืนงาน (Return)
+                    </Button>
+                  </div>
                 </div>
 
                 {/* Teacher Manual Override Form */}
