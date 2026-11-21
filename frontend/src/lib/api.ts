@@ -45,10 +45,18 @@ export async function apiRequest<T>(
     headers.set("Content-Type", "application/json");
   }
 
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    ...options,
-    headers,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}${path}`, {
+      ...options,
+      headers,
+    });
+  } catch {
+    throw new ApiError(
+      "ไม่สามารถติดต่อเซิร์ฟเวอร์ Backend ได้ (หากใช้ Render ฟรี เซิร์ฟเวอร์อาจกำลังตื่นหรือประมวลผลหนัก ลองกดใหม่อีกครั้งใน 10 วินาที)",
+      0
+    );
+  }
 
   if (!res.ok) {
     let msg = `เกิดข้อผิดพลาด (HTTP ${res.status})`;

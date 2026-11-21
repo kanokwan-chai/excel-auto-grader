@@ -659,17 +659,21 @@ async def run_classroom_wizard_grading(
         db.add(sf)
         db.flush()
 
-        res = grade_single_submission(
-            db,
-            owner_user_id=current_teacher.id,
-            assignment=local_assignment,
-            submission=local_sub,
-            rubric_version=rubric_ver,
-            grading_job=job,
-        )
-        graded_results.append(res.id)
-        if res.status == "error":
+        try:
+            res = grade_single_submission(
+                db,
+                owner_user_id=current_teacher.id,
+                assignment=local_assignment,
+                submission=local_sub,
+                rubric_version=rubric_ver,
+                grading_job=job,
+            )
+            graded_results.append(res.id)
+            if res.status == "error":
+                failed += 1
+        except Exception:
             failed += 1
+            db.rollback()
 
     job.processed_files = len(graded_results)
     job.failed_files = failed

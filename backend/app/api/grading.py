@@ -93,18 +93,23 @@ def run_grading_job(
     result_ids: list[str] = []
 
     for sub in submissions:
-        res = grade_single_submission(
-            db,
-            owner_user_id=current_teacher.id,
-            assignment=assignment,
-            submission=sub,
-            rubric_version=rubric_ver,
-            grading_job=job,
-        )
-        processed += 1
-        if res.status == "error":
+        try:
+            res = grade_single_submission(
+                db,
+                owner_user_id=current_teacher.id,
+                assignment=assignment,
+                submission=sub,
+                rubric_version=rubric_ver,
+                grading_job=job,
+            )
+            processed += 1
+            if res.status == "error":
+                failed += 1
+            result_ids.append(res.id)
+        except Exception:
+            processed += 1
             failed += 1
-        result_ids.append(res.id)
+            db.rollback()
 
     job.processed_files = processed
     job.failed_files = failed

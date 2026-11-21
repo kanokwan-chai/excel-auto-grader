@@ -65,8 +65,14 @@ class ExcelGradingEngine:
         recalculated = False
 
         try:
+            enabled_categories = set(rubric.enabled_categories)
+            needs_value_recalc = any(
+                item.is_enabled and item.category == "value" and "value" in enabled_categories
+                for item in rubric.items
+            )
+
             value_file_path: Path = Path(student_file_path)
-            if self.enable_libreoffice:
+            if self.enable_libreoffice and needs_value_recalc:
                 try:
                     value_file_path, recalculated, lo_warn = recalculate_workbook(
                         student_file_path,
@@ -88,7 +94,6 @@ class ExcelGradingEngine:
             if reference_file_path and Path(reference_file_path).exists():
                 ref_loaded = load_workbooks(reference_file_path)
 
-            enabled_categories = set(rubric.enabled_categories)
             results: list[RubricItemResult] = []
 
             for item in rubric.items:
