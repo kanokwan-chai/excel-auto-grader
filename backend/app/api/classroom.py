@@ -345,6 +345,30 @@ async def sync_classroom_submissions(
         .filter(ClassroomCourseMembership.google_classroom_id == gc.id)
         .all()
     }
+    # Auto-sync roster if empty so every student shows their real name
+    if not roster_map:
+        try:
+            roster_students = await fetch_course_students(db, conn, gc.google_course_id)
+            for st in roster_students:
+                prof = st.get("profile", {})
+                ruid = str(st.get("userId") or prof.get("id", ""))
+                if not ruid:
+                    continue
+                m = ClassroomCourseMembership(
+                    owner_user_id=current_teacher.id,
+                    google_classroom_id=gc.id,
+                    google_user_id=ruid,
+                    full_name=prof.get("name", {}).get("fullName") or "Student",
+                    email=prof.get("emailAddress"),
+                    photo_url=prof.get("photoUrl"),
+                    role="STUDENT",
+                )
+                db.add(m)
+                roster_map[ruid] = m
+            gc.student_count = len(roster_students)
+            db.flush()
+        except GoogleAPIError:
+            pass
 
     now = datetime.now(timezone.utc)
     turned_in = 0
@@ -386,18 +410,22 @@ async def sync_classroom_submissions(
             file_id = df.get("id")
             title = df.get("title", "file")
             mime = df.get("mimeType")
-            is_excel = is_supported_excel_attachment(title, mime)
 
+            # Always fetch Drive metadata when file_id is present so we get real mimeType
+            # (Google Classroom API omits mimeType, so Google Sheets or renamed Excel files need Drive metadata!)
             mod_time = ""
             size_bytes = None
-            if is_excel and file_id:
+            if file_id:
                 meta = await fetch_drive_file_metadata(db, conn, file_id)
                 if meta:
                     mod_time = str(meta.get("modifiedTime") or meta.get("createdTime") or "")
                     if meta.get("size"):
                         size_bytes = int(meta["size"])
-                    if not mime and meta.get("mimeType"):
+                    if meta.get("mimeType"):
                         mime = meta["mimeType"]
+
+            is_excel = is_supported_excel_attachment(title, mime)
+            if is_excel and file_id:
                 excel_candidates.append((mod_time, file_id))
 
             attachments.append({
@@ -490,9 +518,9 @@ def list_classroom_submissions(
             "selected_drive_file_id": s.selected_drive_file_id,
             "has_supported_excel": s.has_supported_excel,
             "ui_status": (
-                "not_submitted"
-                if s.state not in ("TURNED_IN", "RETURNED")
-                else ("ready_for_grading" if s.has_supported_excel else "no_excel_file")
+                "ready_for_grading"
+                if s.has_supported_excel
+                else ("no_excel_file" if s.state in ("TURNED_IN", "RETURNED") else "not_submitted")
             ),
         }
         for s in subs
