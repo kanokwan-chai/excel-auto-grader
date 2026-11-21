@@ -67,11 +67,16 @@ def _build_class_report_data(
         if status_filter == "confirmed" and not gr.is_confirmed:
             continue
 
-        deducted_parts = [
-            f"{d.item_title} (-{d.deducted_points:g} คะแนน: {d.reason or 'ไม่ผ่านเกณฑ์'})"
+        deducted_lines = [
+            f"- {d.item_title} (หัก {d.deducted_points:g} คะแนน): {d.reason or 'ไม่ตรงตามเกณฑ์'}"
             for d in gr.details
             if d.deducted_points > 0
         ]
+        deduction_comment = (
+            "รายการที่ถูกหักคะแนน:\n" + "\n".join(deducted_lines)
+            if deducted_lines
+            else "ไม่ถูกหักคะแนน (ทำถูกต้องครบทุกเกณฑ์)"
+        )
 
         rows.append({
             "result_id": gr.id,
@@ -86,7 +91,13 @@ def _build_class_report_data(
             "is_confirmed": gr.is_confirmed,
             "status": gr.status,
             "status_label": "ยืนยันแล้ว" if gr.is_confirmed else ("ผ่าน" if passed else "ไม่ผ่าน"),
-            "deduction_summary": "; ".join(deducted_parts) if deducted_parts else "ไม่ถูกหักคะแนน",
+            "deduction_summary": "; ".join(
+                f"{d.item_title} (-{d.deducted_points:g}: {d.reason or 'ไม่ตรงตามเกณฑ์'})"
+                for d in gr.details
+                if d.deducted_points > 0
+            ) or "ไม่ถูกหักคะแนน",
+            "deduction_comment": deduction_comment,
+            "is_classroom_linked": sub.source == "google_classroom",
         })
 
     if sort_by == "score_desc":

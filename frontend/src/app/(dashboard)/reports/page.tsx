@@ -46,6 +46,24 @@ interface ClassReportResponse {
     passed: boolean;
     is_confirmed: boolean;
     status_label: string;
+    deduction_summary?: string;
+    deduction_comment?: string;
+    is_classroom_linked?: boolean;
+  }[];
+}
+
+interface BatchPushResponse {
+  total: number;
+  confirmed_count: number;
+  pushed_count: number;
+  failed_push_count: number;
+  items: {
+    result_id: string;
+    student_name: string;
+    final_score: number;
+    pushed_to_classroom: boolean;
+    concise_comment: string;
+    classroom_message: string;
   }[];
 }
 
@@ -58,6 +76,11 @@ export default function ReportsPage() {
   const [report, setReport] = useState<ClassReportResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Batch selection & push state
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [batchPushing, setBatchPushing] = useState(false);
+  const [batchResult, setBatchResult] = useState<BatchPushResponse | null>(null);
 
   const [detail, setDetail] = useState<GradingResultDetail | null>(null);
   const [excelPreview, setExcelPreview] = useState<ExcelPreviewData | null>(null);
@@ -72,15 +95,13 @@ export default function ReportsPage() {
   const { toast } = useToast();
 
   const buildDefaultConciseComment = (d: GradingResultDetail) => {
-    const passed = d.details.filter((x) => x.passed).map((x) => x.item_title);
     const deducted = d.details
       .filter((x) => x.deducted_points > 0)
-      .map((x) => `${x.item_title} (-${x.deducted_points}: ${x.reason || "ไม่ตรงเกณฑ์"})`);
-    const parts = [`ได้ ${d.final_score}/${d.max_score} คะแนน (${d.percentage}%)`];
-    if (passed.length > 0) parts.push(`ผ่าน: ${passed.slice(0, 5).join(", ")}`);
-    if (deducted.length > 0) parts.push(`ถูกหัก: ${deducted.slice(0, 5).join("; ")}`);
-    else parts.push("ทำถูกต้องครบทุกเกณฑ์ ยอดเยี่ยมมาก!");
-    return parts.join(" | ");
+      .map((x) => `- ${x.item_title} (หัก ${x.deducted_points} คะแนน): ${x.reason || "ไม่ตรงตามเกณฑ์"}`);
+    if (deducted.length === 0) {
+      return "ไม่ถูกหักคะแนน (ทำถูกต้องครบทุกเกณฑ์)";
+    }
+    return `รายการที่ถูกหักคะแนน:\n${deducted.join("\n")}`;
   };
 
   useEffect(() => {
@@ -104,11 +125,82 @@ export default function ReportsPage() {
         `/reports/assignments/${assignmentId}?${params.toString()}`
       );
       setReport(data);
+      setSelectedIds(data.rows.map((r) => r.result_id));
+      setBatchResult(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "โหลดรายงานไม่สำเร็จ");
     } finally {
       setLoading(false);
     }
+  };
+
+  const toggleSelectRow = (resultId: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(resultId) ? prev.filter((id) => id !== resultId) : [...prev, resultId]
+    );
+  };
+
+  const toggleSelectAll = () => {
+    if (!report) return;
+    if (selectedIds.length === report.rows.length) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(report.rows.map((r) => r.result_id));
+    }
+  };
+
+  const handleBatchApproveAndPush = async (returnToStudent: boolean, pushAll: boolean = false) => {
+    if (!report || report.rows.length === 0) return;
+    const targetIds = pushAll ? report.rows.map((r) => r.result_id) : selectedIds;
+    if (targetIds.length === 0) {
+      toast("กรุณาเลือกนักเรียนอย่างน้อย 1 คน", "error");
+      return;
+    }
+    setBatchPushing(true);
+    setBatchResult(null);
+    try {
+      const res = await apiRequest<BatchPushResponse>("/classroom/results/batch-approve-and-push", {
+        method: "POST",
+        body: JSON.stringify({
+          result_ids: targetIds,
+          return_to_student: returnToStudent,
+        }),
+      });
+      setBatchResult(res);
+      toast(
+        res.pushed_count > 0
+          ? `ส่งคะแนนเข้า Google Classroom สำเร็จ ${res.pushed_count}/${res.total} คน!`
+          : `อนุมัติคะแนนและบันทึกคอมเมนต์แล้ว ${res.confirmed_count} คน`,
+        res.pushed_count > 0 ? "success" : "info"
+      );
+      loadReport();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "ส่งคะแนนแบบกลุ่มไม่สำเร็จ", "error");
+    } finally {
+      setBatchPushing(false);
+    }
+  };
+
+  const handleCopyText = async (text: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast(label);
+    } catch {
+      toast("ไม่สามารถคัดลอกได้", "error");
+    }
+  };
+
+  const handleCopyBatchComments = async () => {
+    if (!report) return;
+    const targetRows = report.rows.filter((r) => selectedIds.includes(r.result_id));
+    if (targetRows.length === 0) {
+      toast("กรุณาเลือกนักเรียนอย่างน้อย 1 คน", "error");
+      return;
+    }
+    const text = targetRows
+      .map((r) => `${r.student_name} (${r.final_score}/${r.max_score}):\n${r.deduction_comment || r.deduction_summary || "ไม่ถูกหักคะแนน"}`)
+      .join("\n\n---\n\n");
+    await handleCopyText(text, `คัดลอกคอมเมนต์หักคะแนนของนักเรียน ${targetRows.length} คนแล้ว`);
   };
 
   useEffect(() => {
@@ -290,39 +382,160 @@ export default function ReportsPage() {
             </div>
           </Card>
 
+          {/* Batch Approve & Push to Google Classroom Bar */}
+          <Card className="border-emerald-200 bg-emerald-50/40 p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-bold text-emerald-950">
+                  ส่งคะแนนเข้า Google Classroom แบบกลุ่ม / เลือกเฉพาะคน
+                </p>
+                <p className="text-xs text-slate-600">
+                  เลือกแล้ว <strong>{selectedIds.length}</strong> จาก {report.rows.length} คน •
+                  คอมเมนต์จะสรุป <strong>เฉพาะส่วนที่ถูกหักคะแนนพร้อมสาเหตุ</strong> อัตโนมัติ
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleCopyBatchComments}
+                  disabled={selectedIds.length === 0}
+                >
+                  <ClipboardCopy className="h-3.5 w-3.5" /> คัดลอกคอมเมนต์ ({selectedIds.length})
+                </Button>
+                <Button
+                  size="sm"
+                  variant="mint"
+                  loading={batchPushing}
+                  disabled={selectedIds.length === 0}
+                  onClick={() => handleBatchApproveAndPush(false, false)}
+                >
+                  <ShieldCheck className="h-3.5 w-3.5" /> ส่งคะแนนที่เลือก (Draft)
+                </Button>
+                <Button
+                  size="sm"
+                  loading={batchPushing}
+                  disabled={selectedIds.length === 0}
+                  onClick={() => handleBatchApproveAndPush(true, false)}
+                >
+                  <Send className="h-3.5 w-3.5" /> ส่งและคืนงานที่เลือก (Return)
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  loading={batchPushing}
+                  onClick={() => handleBatchApproveAndPush(true, true)}
+                >
+                  <Send className="h-3.5 w-3.5" /> ส่งทั้งหมดในครั้งเดียว ({report.rows.length})
+                </Button>
+              </div>
+            </div>
+            <p className="text-[11px] text-slate-500">
+              หมายเหตุ: Google Classroom API รองรับการส่งคะแนนและคืนงานอัตโนมัติทีละหลายคน (สำหรับงานที่สร้างจากเมนู &ldquo;สร้างงานลง Classroom&rdquo;) แต่ยังไม่มี API สำหรับโพสต์ Private Comment แทนครูโดยตรง — ระบบจึงสร้างคอมเมนต์เฉพาะจุดที่หักคะแนนไว้ให้กดคัดลอกได้ทันทีทั้งรายคนและแบบกลุ่ม
+            </p>
+            {batchResult && (
+              <div className="rounded-xl border border-emerald-200 bg-white p-3 text-xs space-y-1.5">
+                <p className="font-semibold text-emerald-900">
+                  สรุปการส่งแบบกลุ่ม: อนุมัติแล้ว {batchResult.confirmed_count}/{batchResult.total} คน •
+                  ส่งเข้า Google Classroom สำเร็จ {batchResult.pushed_count} คน
+                  {batchResult.failed_push_count > 0 && ` • ยังไม่ได้ส่งเข้า Classroom ${batchResult.failed_push_count} คน`}
+                </p>
+                {batchResult.failed_push_count > 0 && batchResult.items.find((i) => !i.pushed_to_classroom) && (
+                  <p className="text-amber-700">
+                    หมายเหตุ: {batchResult.items.find((i) => !i.pushed_to_classroom)?.classroom_message}
+                  </p>
+                )}
+              </div>
+            )}
+          </Card>
+
           <Card className="overflow-x-auto p-0">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-violet-100 bg-violet-50/50 text-left text-xs text-violet-900">
-                  <th className="px-4 py-3">เลขที่</th>
-                  <th className="px-4 py-3">รหัสนักเรียน</th>
-                  <th className="px-4 py-3">ชื่อ-นามสกุล</th>
-                  <th className="px-4 py-3">คะแนน</th>
-                  <th className="px-4 py-3">เต็ม</th>
-                  <th className="px-4 py-3">สถานะ</th>
-                  <th className="px-4 py-3 text-right">รายละเอียด</th>
+                  <th className="px-3 py-3 w-10 text-center">
+                    <input
+                      type="checkbox"
+                      checked={report.rows.length > 0 && selectedIds.length === report.rows.length}
+                      onChange={toggleSelectAll}
+                      aria-label="เลือกทั้งหมด"
+                      className="h-4 w-4 rounded border-violet-300 accent-violet-600 cursor-pointer"
+                    />
+                  </th>
+                  <th className="px-3 py-3">เลขที่</th>
+                  <th className="px-3 py-3">ชื่อ-นามสกุล</th>
+                  <th className="px-3 py-3">คะแนน</th>
+                  <th className="px-3 py-3">ส่วนที่ถูกหักคะแนน (คอมเมนต์)</th>
+                  <th className="px-3 py-3">สถานะ</th>
+                  <th className="px-4 py-3 text-right">จัดการ</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-violet-50">
-                {report.rows.map((r) => (
-                  <tr key={r.result_id} className="hover:bg-violet-50/30">
-                    <td className="px-4 py-3">{r.seat_number}</td>
-                    <td className="px-4 py-3 font-mono text-xs">{r.student_code}</td>
-                    <td className="px-4 py-3 font-medium text-violet-950">{r.student_name}</td>
-                    <td className="px-4 py-3 font-bold text-violet-900">{r.final_score}</td>
-                    <td className="px-4 py-3 text-slate-500">{r.max_score}</td>
-                    <td className="px-4 py-3">
-                      <Badge tone={r.is_confirmed ? "mint" : r.passed ? "sky" : "rose"}>
-                        {r.status_label}
-                      </Badge>
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <Button size="sm" variant="secondary" onClick={() => openStudentDetail(r.result_id)}>
-                        <Eye className="h-3.5 w-3.5" /> ตรวจละเอียด
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
+                {report.rows.map((r) => {
+                  const checked = selectedIds.includes(r.result_id);
+                  return (
+                    <tr
+                      key={r.result_id}
+                      className={`hover:bg-violet-50/30 ${checked ? "bg-violet-50/20" : ""}`}
+                    >
+                      <td className="px-3 py-3 text-center">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleSelectRow(r.result_id)}
+                          aria-label={`เลือก ${r.student_name}`}
+                          className="h-4 w-4 rounded border-violet-300 accent-violet-600 cursor-pointer"
+                        />
+                      </td>
+                      <td className="px-3 py-3">{r.seat_number}</td>
+                      <td className="px-3 py-3">
+                        <p className="font-medium text-violet-950">{r.student_name}</p>
+                        <p className="font-mono text-[11px] text-slate-400">{r.student_code}</p>
+                      </td>
+                      <td className="px-3 py-3 whitespace-nowrap">
+                        <span className="font-bold text-violet-900">{r.final_score}</span>
+                        <span className="text-slate-400"> / {r.max_score}</span>
+                      </td>
+                      <td className="px-3 py-3 max-w-xs">
+                        <p
+                          className={`text-xs line-clamp-2 ${
+                            r.deduction_summary && r.deduction_summary !== "ไม่ถูกหักคะแนน"
+                              ? "text-rose-700"
+                              : "text-emerald-700"
+                          }`}
+                          title={r.deduction_comment || r.deduction_summary}
+                        >
+                          {r.deduction_summary || "ไม่ถูกหักคะแนน"}
+                        </p>
+                      </td>
+                      <td className="px-3 py-3">
+                        <Badge tone={r.is_confirmed ? "mint" : r.passed ? "sky" : "rose"}>
+                          {r.status_label}
+                        </Badge>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex justify-end gap-1.5">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            title="คัดลอกคอมเมนต์เฉพาะส่วนที่ถูกหักคะแนน"
+                            onClick={() =>
+                              handleCopyText(
+                                r.deduction_comment || r.deduction_summary || "ไม่ถูกหักคะแนน",
+                                `คัดลอกคอมเมนต์ของ ${r.student_name} แล้ว`
+                              )
+                            }
+                          >
+                            <ClipboardCopy className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button size="sm" variant="secondary" onClick={() => openStudentDetail(r.result_id)}>
+                            <Eye className="h-3.5 w-3.5" /> ตรวจละเอียด
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </Card>
@@ -465,7 +678,7 @@ export default function ReportsPage() {
                   <div className="flex items-center justify-between gap-2">
                     <p className="flex items-center gap-1.5 text-xs font-bold text-emerald-950">
                       <Send className="h-3.5 w-3.5 text-emerald-600" />
-                      อนุมัติและส่งคะแนนเข้า Google Classroom + คอมเมนต์กระชับ
+                      อนุมัติและส่งคะแนนเข้า Google Classroom + คอมเมนต์เฉพาะจุดที่หักคะแนน
                     </p>
                     <Button size="sm" variant="outline" onClick={handleCopyComment}>
                       <ClipboardCopy className="h-3 w-3" /> คัดลอกคอมเมนต์
@@ -476,7 +689,7 @@ export default function ReportsPage() {
                     value={conciseComment}
                     onChange={(e) => setConciseComment(e.target.value)}
                     className="text-xs"
-                    placeholder="คอมเมนต์กระชับอธิบายเหตุผลคะแนน..."
+                    placeholder="คอมเมนต์เฉพาะรายการที่ถูกหักคะแนนพร้อมสาเหตุ..."
                   />
                   {pushFeedbackMsg && (
                     <p className="rounded-xl bg-white px-3 py-2 text-[11px] text-emerald-900 border border-emerald-200">

@@ -821,46 +821,24 @@ async def run_classroom_wizard_grading(
 
 
 def _build_concise_feedback_th(gr: GradingResult) -> str:
-    passed_titles = [d.item_title for d in gr.details if d.passed]
-    deducted_parts = [
-        f"{d.item_title} (-{d.deducted_points:g}: {d.reason or 'ไม่ตรงเกณฑ์'})"
+    deducted_lines = [
+        f"- {d.item_title} (หัก {d.deducted_points:g} คะแนน): {d.reason or 'ไม่ตรงตามเกณฑ์'}"
         for d in gr.details
         if d.deducted_points > 0
     ]
-    parts = [f"คะแนน {gr.final_score:g}/{gr.max_score:g} ({gr.percentage:g}%)"]
-    if passed_titles:
-        parts.append("ผ่าน: " + ", ".join(passed_titles[:5]))
-    if deducted_parts:
-        parts.append("ถูกหัก: " + "; ".join(deducted_parts[:5]))
-    else:
-        parts.append("ทำถูกต้องครบทุกเกณฑ์ ยอดเยี่ยมมาก!")
-    return " | ".join(parts)
+    if not deducted_lines:
+        return "ไม่ถูกหักคะแนน (ทำถูกต้องครบทุกเกณฑ์)"
+    return "รายการที่ถูกหักคะแนน:\n" + "\n".join(deducted_lines)
 
 
-@router.post("/results/{result_id}/approve-and-push")
-async def approve_and_push_grade_to_classroom(
-    result_id: str,
-    payload: dict | None = None,
-    current_teacher: User = Depends(get_current_teacher),
-    db: Session = Depends(get_db),
-):
-    """
-    Approve/confirm a student's grading result, save concise Thai feedback comment,
-    and push the score (draftGrade / assignedGrade) to Google Classroom if linked.
-    """
-    body = payload or {}
-    return_to_student = bool(body.get("return_to_student", False))
-    custom_comment = (body.get("comment") or "").strip()
-
-    gr = (
-        db.query(GradingResult)
-        .filter(GradingResult.id == result_id, GradingResult.owner_user_id == current_teacher.id)
-        .first()
-    )
-    if not gr:
-        raise HTTPException(status_code=404, detail="ไม่พบผลการตรวจ")
-
-    concise_comment = custom_comment or _build_concise_feedback_th(gr)
+async def _approve_and_push_single(
+    db: Session,
+    current_teacher: User,
+    gr: GradingResult,
+    return_to_student: bool = False,
+    custom_comment: str | None = None,
+) -> dict:
+    concise_comment = (custom_comment or "").strip() or (gr.teacher_comment or "").strip() or _build_concise_feedback_th(gr)
     gr.teacher_comment = concise_comment
     gr.is_confirmed = True
     gr.status = "confirmed"
@@ -881,7 +859,9 @@ async def approve_and_push_grade_to_classroom(
     )
     db.commit()
 
-    # Check if linked to Google Classroom submission
+    sub = db.query(Submission).filter(Submission.id == gr.submission_id).first()
+    student_name = sub.student_display_name if sub else "-"
+
     cs = (
         db.query(ClassroomSubmission)
         .filter(
@@ -892,6 +872,9 @@ async def approve_and_push_grade_to_classroom(
     )
     if not cs:
         return {
+            "result_id": gr.id,
+            "student_name": student_name,
+            "final_score": gr.final_score,
             "confirmed": True,
             "pushed_to_classroom": False,
             "concise_comment": concise_comment,
@@ -904,6 +887,9 @@ async def approve_and_push_grade_to_classroom(
 
     if not ca or not gc or not conn:
         return {
+            "result_id": gr.id,
+            "student_name": student_name,
+            "final_score": gr.final_score,
             "confirmed": True,
             "pushed_to_classroom": False,
             "concise_comment": concise_comment,
@@ -921,15 +907,103 @@ async def approve_and_push_grade_to_classroom(
             return_to_student=return_to_student,
         )
         return {
+            "result_id": gr.id,
+            "student_name": student_name,
+            "final_score": gr.final_score,
             "confirmed": True,
             "pushed_to_classroom": True,
             "concise_comment": concise_comment,
-            "classroom_message": "อนุมัติและส่งคะแนนเข้า Google Classroom สำเร็จแล้ว! (สามารถกดคัดลอกคอมเมนต์ไปวางในช่อง Private Comment ของ Classroom ได้ทันที)",
+            "classroom_message": "อนุมัติและส่งคะแนนเข้า Google Classroom สำเร็จแล้ว! (หมายเหตุ: Google Classroom API ไม่มีช่องทางส่ง Private Comment อัตโนมัติ สามารถกดปุ่มคัดลอกคอมเมนต์ไปวางได้เลย)",
         }
     except GoogleAPIError as exc:
         return {
+            "result_id": gr.id,
+            "student_name": student_name,
+            "final_score": gr.final_score,
             "confirmed": True,
             "pushed_to_classroom": False,
             "concise_comment": concise_comment,
             "classroom_message": exc.message,
         }
+
+
+@router.post("/results/batch-approve-and-push")
+async def batch_approve_and_push_grades(
+    payload: dict,
+    current_teacher: User = Depends(get_current_teacher),
+    db: Session = Depends(get_db),
+):
+    """Approve and push scores to Google Classroom for multiple selected students in one click."""
+    result_ids = payload.get("result_ids") or []
+    return_to_student = bool(payload.get("return_to_student", False))
+    if not isinstance(result_ids, list) or len(result_ids) == 0:
+        raise HTTPException(status_code=400, detail="กรุณาเลือกนักเรียนอย่างน้อย 1 คน")
+
+    results = (
+        db.query(GradingResult)
+        .filter(
+            GradingResult.id.in_(result_ids),
+            GradingResult.owner_user_id == current_teacher.id,
+        )
+        .all()
+    )
+    if not results:
+        raise HTTPException(status_code=404, detail="ไม่พบผลการตรวจของนักเรียนที่เลือก")
+
+    items = []
+    pushed_count = 0
+    failed_push_count = 0
+    for gr in results:
+        # Always refresh deduction-only comment if teacher hasn't customized it
+        res = await _approve_and_push_single(
+            db=db,
+            current_teacher=current_teacher,
+            gr=gr,
+            return_to_student=return_to_student,
+            custom_comment=None,
+        )
+        items.append(res)
+        if res["pushed_to_classroom"]:
+            pushed_count += 1
+        else:
+            failed_push_count += 1
+
+    return {
+        "total": len(items),
+        "confirmed_count": len(items),
+        "pushed_count": pushed_count,
+        "failed_push_count": failed_push_count,
+        "items": items,
+    }
+
+
+@router.post("/results/{result_id}/approve-and-push")
+async def approve_and_push_grade_to_classroom(
+    result_id: str,
+    payload: dict | None = None,
+    current_teacher: User = Depends(get_current_teacher),
+    db: Session = Depends(get_db),
+):
+    """
+    Approve/confirm a student's grading result, save concise Thai deduction-only feedback comment,
+    and push the score (draftGrade / assignedGrade) to Google Classroom if linked.
+    """
+    body = payload or {}
+    return_to_student = bool(body.get("return_to_student", False))
+    custom_comment = (body.get("comment") or "").strip()
+
+    gr = (
+        db.query(GradingResult)
+        .filter(GradingResult.id == result_id, GradingResult.owner_user_id == current_teacher.id)
+        .first()
+    )
+    if not gr:
+        raise HTTPException(status_code=404, detail="ไม่พบผลการตรวจ")
+
+    return await _approve_and_push_single(
+        db=db,
+        current_teacher=current_teacher,
+        gr=gr,
+        return_to_student=return_to_student,
+        custom_comment=custom_comment,
+    )
