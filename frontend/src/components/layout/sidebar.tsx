@@ -41,6 +41,12 @@ export function Sidebar() {
   const pathname = usePathname();
   const { teacher, logout } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [avatarFailed, setAvatarFailed] = useState(false);
+
+  const validAvatar =
+    teacher?.avatar_url &&
+    !avatarFailed &&
+    (teacher.avatar_url.startsWith("data:") || teacher.avatar_url.startsWith("http"));
 
   const initials = (teacher?.full_name || "CR")
     .split(" ")
@@ -104,10 +110,11 @@ export function Sidebar() {
       {/* Teacher Profile & Logout */}
       <div className="border-t border-violet-100 p-4 bg-gradient-to-b from-white to-violet-50/40">
         <div className="flex items-center gap-3">
-          {teacher?.avatar_url ? (
+          {validAvatar ? (
             <img
-              src={teacher.avatar_url}
-              alt={teacher.full_name}
+              src={teacher!.avatar_url!}
+              alt={teacher!.full_name}
+              onError={() => setAvatarFailed(true)}
               className="h-10 w-10 rounded-2xl object-cover border border-violet-200"
             />
           ) : (

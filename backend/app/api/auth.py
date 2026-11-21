@@ -165,6 +165,10 @@ async def upload_avatar(
     current_teacher: User = Depends(get_current_teacher),
     db: Session = Depends(get_db),
 ):
+    import base64
+    import io
+    from PIL import Image
+
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="รองรับเฉพาะไฟล์รูปภาพเท่านั้น")
     content = await file.read()
@@ -178,10 +182,23 @@ async def upload_avatar(
         content=content,
         content_type=file.content_type,
     )
+
+    # Compress avatar to a crisp 256x256 JPEG data URL so it always renders reliably on Vercel/Render
+    try:
+        img = Image.open(io.BytesIO(content)).convert("RGB")
+        img.thumbnail((256, 256))
+        out_buf = io.BytesIO()
+        img.save(out_buf, format="JPEG", quality=85)
+        b64 = base64.b64encode(out_buf.getvalue()).decode("ascii")
+        avatar_data_url = f"data:image/jpeg;base64,{b64}"
+    except Exception:
+        b64 = base64.b64encode(content).decode("ascii")
+        avatar_data_url = f"data:{file.content_type};base64,{b64}"
+
     profile = db.query(TeacherProfile).filter(TeacherProfile.user_id == current_teacher.id).first()
     if profile:
         profile.avatar_storage_path = path
-    current_teacher.avatar_url = f"/storage/{path}"
+    current_teacher.avatar_url = avatar_data_url
     db.commit()
     return {"avatar_url": current_teacher.avatar_url, "storage_path": path}
 
