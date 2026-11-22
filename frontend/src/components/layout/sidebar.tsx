@@ -3,40 +3,24 @@
 import React, { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import {
-  BarChart3,
-  BookOpen,
-  ClipboardCheck,
-  FileSpreadsheet,
-  FolderKanban,
-  GraduationCap,
-  History,
-  LayoutDashboard,
-  Link2,
-  LogOut,
-  Menu,
-  Scale,
-  Send,
-  Settings,
-  Users,
-  X,
-} from "lucide-react";
+import { ChevronRight, LogOut, Menu, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
+import { Excel3DLogo, Icon3D, type Tone3D } from "@/components/ui/primitives";
 
-const NAV_ITEMS = [
-  { href: "/dashboard", label: "ภาพรวม", icon: LayoutDashboard, accent: "text-violet-600 bg-violet-100" },
-  { href: "/google-classroom", label: "Google Classroom", icon: GraduationCap, accent: "text-sky-600 bg-sky-100" },
-  { href: "/classroom-create", label: "สร้างงานลง Classroom", icon: Send, accent: "text-emerald-600 bg-emerald-100" },
-  { href: "/google-accounts", label: "บัญชี Google", icon: Link2, accent: "text-pink-600 bg-pink-100" },
-  { href: "/classes", label: "ชั้นเรียนของฉัน", icon: BookOpen, accent: "text-emerald-600 bg-emerald-100" },
-  { href: "/students", label: "รายชื่อนักเรียน", icon: Users, accent: "text-amber-600 bg-amber-100" },
-  { href: "/assignments", label: "งานที่มอบหมาย", icon: FolderKanban, accent: "text-purple-600 bg-purple-100" },
-  { href: "/grading", label: "ตรวจงาน Excel", icon: ClipboardCheck, accent: "text-teal-600 bg-teal-100" },
-  { href: "/rubrics", label: "เกณฑ์การตรวจ", icon: Scale, accent: "text-fuchsia-600 bg-fuchsia-100" },
-  { href: "/reports", label: "คะแนนและรายงาน", icon: BarChart3, accent: "text-indigo-600 bg-indigo-100" },
-  { href: "/history", label: "ประวัติการตรวจ", icon: History, accent: "text-rose-600 bg-rose-100" },
-  { href: "/settings", label: "ตั้งค่าบัญชี", icon: Settings, accent: "text-slate-600 bg-slate-100" },
+const NAV_ITEMS: { href: string; label: string; emoji: string; tone: Tone3D }[] = [
+  { href: "/dashboard", label: "ภาพรวม", emoji: "🏠", tone: "green" },
+  { href: "/google-classroom", label: "Google Classroom", emoji: "🎓", tone: "sky" },
+  { href: "/classroom-create", label: "สร้างงานลง Classroom", emoji: "🚀", tone: "mint" },
+  { href: "/google-accounts", label: "บัญชี Google", emoji: "🔗", tone: "pink" },
+  { href: "/classes", label: "ชั้นเรียนของฉัน", emoji: "📚", tone: "yellow" },
+  { href: "/students", label: "รายชื่อนักเรียน", emoji: "👥", tone: "orange" },
+  { href: "/assignments", label: "งานที่มอบหมาย", emoji: "📁", tone: "sky" },
+  { href: "/grading", label: "ตรวจงาน Excel", emoji: "✅", tone: "green" },
+  { href: "/rubrics", label: "เกณฑ์การตรวจ", emoji: "🎯", tone: "lavender" },
+  { href: "/reports", label: "คะแนนและรายงาน", emoji: "📊", tone: "mint" },
+  { href: "/history", label: "ประวัติการตรวจ", emoji: "🕒", tone: "rose" },
+  { href: "/settings", label: "ตั้งค่าบัญชี", emoji: "⚙️", tone: "lavender" },
 ];
 
 export function Sidebar() {
@@ -58,29 +42,30 @@ export function Sidebar() {
     .toUpperCase();
 
   const content = (
-    <div className="flex h-full flex-col justify-between bg-white/95 border-r border-violet-100">
+    <div className="flex h-full flex-col justify-between bg-white/95 border-r-2 border-[#E5F2E1] shadow-[4px_0_24px_-12px_rgba(34,84,45,0.08)]">
       <div>
-        <div className="flex items-center justify-between px-5 py-5 border-b border-violet-50">
-          <Link href="/dashboard" className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-500 via-purple-500 to-pink-400 text-white shadow-sm">
-              <FileSpreadsheet className="h-5 w-5" />
+        <div className="flex items-center justify-between px-5 py-5">
+          <Link href="/dashboard" className="flex items-center gap-3 group">
+            <div className="transition-transform duration-200 group-hover:scale-105 group-hover:-rotate-3">
+              <Excel3DLogo size="md" />
             </div>
             <div>
-              <div className="text-sm font-bold text-violet-950 leading-tight">Excel Auto Grader</div>
-              <div className="text-[11px] font-medium text-violet-500">Multi-Teacher SaaS</div>
+              <div className="text-sm font-extrabold text-[#172B1C] leading-tight tracking-tight">
+                Excel Auto Grader
+              </div>
+              <div className="text-[11px] font-semibold text-[#5E8266]">Multi-Teacher SaaS ✨</div>
             </div>
           </Link>
           <button
             onClick={() => setMobileOpen(false)}
-            className="lg:hidden rounded-xl p-1.5 text-slate-500 hover:bg-violet-50"
+            className="lg:hidden rounded-full p-1.5 text-slate-500 hover:bg-[#EDF9E9]"
           >
             <X className="h-5 w-5" />
           </button>
         </div>
 
-        <nav className="mt-3 space-y-1 px-3 overflow-y-auto max-h-[calc(100vh-195px)]">
+        <nav className="mt-1 space-y-1.5 px-3 overflow-y-auto max-h-[calc(100vh-215px)] pb-3">
           {NAV_ITEMS.map((item) => {
-            const Icon = item.icon;
             const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
             return (
               <Link
@@ -88,52 +73,61 @@ export function Sidebar() {
                 href={item.href}
                 onClick={() => setMobileOpen(false)}
                 className={cn(
-                  "flex items-center gap-3 rounded-2xl px-3.5 py-2.5 text-sm font-medium transition-all",
+                  "group flex items-center gap-3 rounded-full px-3 py-2 text-sm font-semibold transition-all duration-150",
                   active
-                    ? "bg-gradient-to-r from-violet-100/90 to-pink-50/80 text-violet-950 shadow-xs"
-                    : "text-slate-600 hover:bg-violet-50/70 hover:text-violet-900"
+                    ? "clay-pill-active"
+                    : "text-[#394D3E] hover:bg-[#F2FAF0] hover:text-[#172B1C] hover:translate-x-0.5"
                 )}
               >
-                <span
-                  className={cn(
-                    "flex h-8 w-8 items-center justify-center rounded-xl transition",
-                    active ? item.accent : "bg-slate-50 text-slate-500"
-                  )}
-                >
-                  <Icon className="h-4 w-4" />
-                </span>
-                <span>{item.label}</span>
+                {active ? (
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/85 text-sm shadow-xs">
+                    {item.emoji}
+                  </span>
+                ) : (
+                  <Icon3D
+                    emoji={item.emoji}
+                    tone={item.tone}
+                    size="xs"
+                    className="opacity-90 group-hover:scale-110 transition-transform"
+                  />
+                )}
+                <span className="truncate">{item.label}</span>
               </Link>
             );
           })}
         </nav>
       </div>
 
-      {/* Teacher Profile & Logout */}
-      <div className="border-t border-violet-100 p-4 bg-gradient-to-b from-white to-violet-50/40">
-        <div className="flex items-center gap-3">
+      {/* Teacher Profile Card & Logout */}
+      <div className="p-3.5 border-t border-[#EAF5E7] bg-gradient-to-b from-white to-[#F6FCF4]">
+        <Link
+          href="/settings"
+          onClick={() => setMobileOpen(false)}
+          className="flex items-center gap-2.5 rounded-full border-2 border-[#DCEFD6] bg-white px-2.5 py-2 shadow-[inset_0_2px_0_rgba(255,255,255,0.9),0_4px_10px_-4px_rgba(34,84,45,0.12)] hover:border-[#9CE077] transition"
+        >
           {validAvatar ? (
             <img
               src={teacher!.avatar_url!}
               alt={teacher!.full_name}
               onError={() => setAvatarFailed(true)}
-              className="h-10 w-10 rounded-2xl object-cover border border-violet-200"
+              className="h-9 w-9 rounded-full object-cover border-2 border-[#BCE8A8]"
             />
           ) : (
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-200 to-pink-200 text-xs font-bold text-violet-900">
-              {initials}
+            <div className="clay-icon-3d h-9 w-9 shrink-0 bg-gradient-to-b from-[#B9F28E] to-[#68C745] text-xs font-extrabold text-[#16361C]">
+              <span className="relative z-10">{initials}</span>
             </div>
           )}
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold text-violet-950">
+            <p className="truncate text-xs font-bold text-[#172B1C]">
               {teacher?.full_name || "ครูผู้สอน"}
             </p>
-            <p className="truncate text-xs text-slate-500">{teacher?.email || ""}</p>
+            <p className="truncate text-[11px] text-[#5C7061]">{teacher?.email || ""}</p>
           </div>
-        </div>
+          <ChevronRight className="h-4 w-4 shrink-0 text-[#86A68D]" />
+        </Link>
         <button
           onClick={logout}
-          className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-rose-200 bg-rose-50/80 py-2 text-xs font-medium text-rose-700 hover:bg-rose-100 transition"
+          className="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-full border border-rose-200 bg-gradient-to-b from-[#FFF2F4] to-[#FFE1E6] py-1.5 text-xs font-semibold text-rose-700 shadow-[inset_0_1.5px_0_rgba(255,255,255,0.8),0_2px_0_#FECDD3] hover:brightness-[0.98] active:translate-y-[1px] transition cursor-pointer"
         >
           <LogOut className="h-3.5 w-3.5" />
           ออกจากระบบ
@@ -145,16 +139,14 @@ export function Sidebar() {
   return (
     <>
       {/* Mobile Header Bar */}
-      <div className="sticky top-0 z-30 flex items-center justify-between border-b border-violet-100 bg-white/90 px-4 py-3 backdrop-blur-md lg:hidden">
+      <div className="sticky top-0 z-30 flex items-center justify-between border-b-2 border-[#E5F2E1] bg-white/95 px-4 py-3 backdrop-blur-md lg:hidden">
         <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-violet-600 text-white">
-            <FileSpreadsheet className="h-4 w-4" />
-          </div>
-          <span className="text-sm font-bold text-violet-950">Excel Auto Grader</span>
+          <Excel3DLogo size="sm" />
+          <span className="text-sm font-extrabold text-[#172B1C]">Excel Auto Grader</span>
         </div>
         <button
           onClick={() => setMobileOpen(true)}
-          className="rounded-xl border border-violet-200 p-2 text-violet-700"
+          className="rounded-full border-2 border-[#D4E8CE] bg-white p-2 text-[#2B6E36]"
         >
           <Menu className="h-5 w-5" />
         </button>
@@ -168,7 +160,7 @@ export function Sidebar() {
       {/* Mobile Drawer */}
       {mobileOpen && (
         <div className="fixed inset-0 z-50 flex lg:hidden">
-          <div className="fixed inset-0 bg-violet-950/30 backdrop-blur-xs" onClick={() => setMobileOpen(false)} />
+          <div className="fixed inset-0 bg-[#142919]/30 backdrop-blur-xs" onClick={() => setMobileOpen(false)} />
           <div className="relative z-10 w-72 max-w-[85vw]">{content}</div>
         </div>
       )}
