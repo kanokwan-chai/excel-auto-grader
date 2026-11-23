@@ -678,6 +678,7 @@ def check_position_item(
 def check_structure_item(
     item: RubricItemConfig,
     student_wb: Workbook,
+    student_value_wb: Workbook | None = None,
 ) -> RubricItemResult:
     """Check worksheet structure: sheet names, count, order, hidden state, tables, charts."""
     cfg = item.rule_config or {}
@@ -879,11 +880,16 @@ def check_structure_item(
             # Case D: Detailed filter_conditions verification (supports ALL operators & multi-column AND!)
             conditions = cfg.get("filter_conditions") or []
             if conditions and data_rows:
+                val_ws = (
+                    student_value_wb[resolved_sheet]
+                    if (student_value_wb is not None and resolved_sheet in student_value_wb.sheetnames)
+                    else ws
+                )
                 total += 1
                 cond_evals: list[tuple[int | None, dict[str, Any]]] = []
                 missing_cols: list[str] = []
                 for cond in conditions:
-                    col_idx = _resolve_filter_column_index(ws, header_row, data_rows, cond)
+                    col_idx = _resolve_filter_column_index(val_ws, header_row, data_rows, cond)
                     if col_idx is None:
                         missing_cols.append(str(cond.get("column") or cond.get("value") or "?"))
                     cond_evals.append((col_idx, cond))
@@ -904,7 +910,9 @@ def check_structure_item(
                         for r in data_rows
                         if all(
                             _eval_filter_condition(
-                                ws.cell(row=r, column=c_idx).value,
+                                val_ws.cell(row=r, column=c_idx).value
+                                if val_ws.cell(row=r, column=c_idx).value is not None
+                                else ws.cell(row=r, column=c_idx).value,
                                 str(cond.get("operator") or "equals"),
                                 cond.get("value"),
                                 cond.get("value2"),

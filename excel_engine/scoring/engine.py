@@ -125,7 +125,7 @@ class ExcelGradingEngine:
                         ref_loaded.formula_wb if ref_loaded else None,
                     )
                 elif item.category == "structure":
-                    res = check_structure_item(item, student_loaded.formula_wb)
+                    res = check_structure_item(item, student_loaded.formula_wb, student_loaded.value_wb)
                 elif item.category == "chart":
                     res = check_chart_item(item, student_loaded.formula_wb)
                 elif item.category == "completeness":

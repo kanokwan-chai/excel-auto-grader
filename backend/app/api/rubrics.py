@@ -327,7 +327,7 @@ def expand_natural_language_rubric(
             conds: list[dict[str, Any]] = []
             col_hint_map = [
                 (r"ยี่ห้อ", "ยี่ห้อ"),
-                (r"ผู้จำหน่าย|ร้านค้า|จำหน่ายโดย", "ผู้จำหน่าย"),
+                (r"ผู้จำหน่าย|จำหน่ายโดย", "ผู้จำหน่าย"),
                 (r"ประเภท|หมวดหมู่", "ประเภท"),
                 (r"ชื่อสินค้า|ชื่อ", "ชื่อสินค้า"),
                 (r"ยอดขาย|จำนวนขาย|จำนวน", "ยอดขาย"),
@@ -344,23 +344,27 @@ def expand_natural_language_rubric(
             m_starts = re.search(r"ขึ้นต้นด้วย(?:คำว่า)?\s*[`\"'“”]?([^`\"'“”\n,]+)[`\"'“”]?", blk_text)
             if m_starts:
                 val = m_starts.group(1).strip().split()[0]
-                conds.append({"column": _guess_col(blk_text) or "ชื่อสินค้า", "operator": "starts_with", "value": val})
+                local_ctx = blk_text[max(0, m_starts.start() - 40) : m_starts.start()]
+                conds.append({"column": _guess_col(local_ctx) or "ชื่อสินค้า", "operator": "starts_with", "value": val})
 
             m_ends = re.search(r"ลงท้ายด้วย(?:คำว่า)?\s*[`\"'“”]?([^`\"'“”\n,]+)[`\"'“”]?", blk_text)
             if m_ends:
                 val = m_ends.group(1).strip().split()[0]
-                conds.append({"column": _guess_col(blk_text) or "ชื่อสินค้า", "operator": "ends_with", "value": val})
+                local_ctx = blk_text[max(0, m_ends.start() - 40) : m_ends.start()]
+                conds.append({"column": _guess_col(local_ctx) or "ชื่อสินค้า", "operator": "ends_with", "value": val})
 
             m_contains = re.search(r"(?:มีคำว่า|ประกอบด้วยคำว่า)\s*[`\"'“”]?([^`\"'“”\n,]+)[`\"'“”]?", blk_text)
             if m_contains:
                 val = m_contains.group(1).strip().split()[0]
-                conds.append({"column": _guess_col(blk_text) or "ชื่อสินค้า", "operator": "contains", "value": val})
+                local_ctx = blk_text[max(0, m_contains.start() - 40) : m_contains.start()]
+                conds.append({"column": _guess_col(local_ctx) or "ชื่อสินค้า", "operator": "contains", "value": val})
 
             # Numeric Filter: between / gte / gt / lte / lt
             m_between = re.search(r"ระหว่าง\s*(\d+(?:\.\d+)?)\s*(?:ถึง|-)\s*(\d+(?:\.\d+)?)", blk_text)
             if m_between:
+                local_ctx = blk_text[max(0, m_between.start() - 40) : m_between.start()]
                 conds.append({
-                    "column": _guess_col(blk_text) or "ยอดขาย",
+                    "column": _guess_col(local_ctx) or "ยอดขาย",
                     "operator": "between",
                     "value": float(m_between.group(1)),
                     "value2": float(m_between.group(2)),
@@ -371,13 +375,17 @@ def expand_natural_language_rubric(
                 m_lte = re.search(r"(?:ไม่เกิน|น้อยกว่าหรือเท่ากับ|<=)\s*(\d+(?:\.\d+)?)", blk_text)
                 m_lt = re.search(r"(?:น้อยกว่า|ต่ำกว่า|<)\s*(\d+(?:\.\d+)?)", blk_text)
                 if m_gte:
-                    conds.append({"column": _guess_col(blk_text) or "ยอดขาย", "operator": "gte", "value": float(m_gte.group(1))})
+                    local_ctx = blk_text[max(0, m_gte.start() - 40) : m_gte.start()]
+                    conds.append({"column": _guess_col(local_ctx) or "ยอดขาย", "operator": "gte", "value": float(m_gte.group(1))})
                 elif m_gt:
-                    conds.append({"column": _guess_col(blk_text) or "ยอดขาย", "operator": "gt", "value": float(m_gt.group(1))})
+                    local_ctx = blk_text[max(0, m_gt.start() - 40) : m_gt.start()]
+                    conds.append({"column": _guess_col(local_ctx) or "ยอดขาย", "operator": "gt", "value": float(m_gt.group(1))})
                 elif m_lte:
-                    conds.append({"column": _guess_col(blk_text) or "ยอดขาย", "operator": "lte", "value": float(m_lte.group(1))})
+                    local_ctx = blk_text[max(0, m_lte.start() - 40) : m_lte.start()]
+                    conds.append({"column": _guess_col(local_ctx) or "ยอดขาย", "operator": "lte", "value": float(m_lte.group(1))})
                 elif m_lt:
-                    conds.append({"column": _guess_col(blk_text) or "ยอดขาย", "operator": "lt", "value": float(m_lt.group(1))})
+                    local_ctx = blk_text[max(0, m_lt.start() - 40) : m_lt.start()]
+                    conds.append({"column": _guess_col(local_ctx) or "ยอดขาย", "operator": "lt", "value": float(m_lt.group(1))})
 
             # Exact quoted / backtick value match (e.g. `Pentel`, `ร้านดิจิทัลพลัส`, `ของใช้ในบ้าน`)
             existing_text_vals = {str(c.get("value", "")).lower() for c in conds}
