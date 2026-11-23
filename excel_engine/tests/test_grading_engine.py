@@ -394,5 +394,113 @@ def test_16_filter_formula_xlws_prefix_and_autofilter(tmp_excel_dir: Path):
     assert any(e.error_code == "MISSING_AUTOFILTER" for e in res_bad.errors)
 
 
+def test_17_multi_tab_filter_conditions_all_6_exercises(tmp_excel_dir: Path):
+    """Simulate a 6-tab student Excel workbook covering exact, numeric, text, multi-condition, and clear filter."""
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+
+    sample_products = [
+        ("น้ำดื่มคริสตัล", "Crystal", "ร้านดิจิทัลพลัส", "เครื่องดื่ม", 85),
+        ("น้ำยาล้างจาน", "Sunlight", "ร้านแม่บ้าน", "ของใช้ในบ้าน", 60),
+        ("ปากกาลูกลื่น", "Pentel", "ร้านเครื่องเขียน", "เครื่องเขียน", 95),
+        ("ไม้กวาด", "HomePro", "ร้านดิจิทัลพลัส", "ของใช้ในบ้าน", 40),
+        ("ผ้าเช็ดโต๊ะ", "HomePro", "ร้านแม่บ้าน", "ของใช้ในบ้าน", 75),
+    ]
+    # Pad to 30 products total
+    for i in range(6, 31):
+        sample_products.append((f"สินค้า {i}", "OtherBrand", "ร้านทั่วไป", "ทั่วไป", 30 + (i % 20)))
+
+    def make_tab(title: str):
+        ws = wb.create_sheet(title=title)
+        ws.append(["ชื่อสินค้า", "ยี่ห้อ", "ผู้จำหน่าย", "ประเภท", "ยอดขาย"])
+        for row in sample_products:
+            ws.append(list(row))
+        ws.auto_filter.ref = "A1:E31"
+        return ws
+
+    # ข้อ 1: ยี่ห้อ = Pentel
+    ws1 = make_tab("ข้อ 1")
+    for r in range(2, 32):
+        if ws1.cell(r, 2).value != "Pentel":
+            ws1.row_dimensions[r].hidden = True
+
+    # ข้อ 2: ผู้จำหน่าย = ร้านดิจิทัลพลัส
+    ws2 = make_tab("ข้อ 2")
+    for r in range(2, 32):
+        if ws2.cell(r, 3).value != "ร้านดิจิทัลพลัส":
+            ws2.row_dimensions[r].hidden = True
+
+    # ข้อ 3: ยอดขาย >= 70
+    ws3 = make_tab("ข้อ 3")
+    for r in range(2, 32):
+        if ws3.cell(r, 5).value < 70:
+            ws3.row_dimensions[r].hidden = True
+
+    # ข้อ 4: ชื่อสินค้า ขึ้นต้นด้วย น้ำ
+    ws4 = make_tab("ข้อ 4")
+    for r in range(2, 32):
+        if not str(ws4.cell(r, 1).value).startswith("น้ำ"):
+            ws4.row_dimensions[r].hidden = True
+
+    # ข้อ 5: ประเภท = ของใช้ในบ้าน AND ยอดขาย > 50
+    ws5 = make_tab("ข้อ 5")
+    for r in range(2, 32):
+        if not (ws5.cell(r, 4).value == "ของใช้ในบ้าน" and ws5.cell(r, 5).value > 50):
+            ws5.row_dimensions[r].hidden = True
+
+    # ข้อ 6: ยกเลิกตัวกรอง แสดงครบ 30 รายการ
+    make_tab("ข้อ 6")
+
+    stu_path = tmp_excel_dir / "student_6tabs.xlsx"
+    wb.save(stu_path)
+
+    rubric = RubricConfig(
+        total_points=12.0,
+        items=[
+            RubricItemConfig(
+                id="q1", title="ข้อ 1 ยี่ห้อ Pentel", category="structure", sheet_name="ข้อ 1",
+                rule_config={"require_autofilter": True, "filter_conditions": [{"column": "ยี่ห้อ", "operator": "equals", "value": "Pentel"}]},
+                max_points=2.0,
+            ),
+            RubricItemConfig(
+                id="q2", title="ข้อ 2 ร้านดิจิทัลพลัส", category="structure", sheet_name="ข้อ 2",
+                rule_config={"require_autofilter": True, "filter_conditions": [{"column": "ผู้จำหน่าย", "operator": "equals", "value": "ร้านดิจิทัลพลัส"}]},
+                max_points=2.0,
+            ),
+            RubricItemConfig(
+                id="q3", title="ข้อ 3 ยอดขาย >= 70", category="structure", sheet_name="ข้อ 3",
+                rule_config={"require_autofilter": True, "filter_conditions": [{"column": "ยอดขาย", "operator": "gte", "value": 70}]},
+                max_points=2.0,
+            ),
+            RubricItemConfig(
+                id="q4", title="ข้อ 4 ขึ้นต้นด้วย น้ำ", category="structure", sheet_name="ข้อ 4",
+                rule_config={"require_autofilter": True, "filter_conditions": [{"column": "ชื่อสินค้า", "operator": "starts_with", "value": "น้ำ"}]},
+                max_points=2.0,
+            ),
+            RubricItemConfig(
+                id="q5", title="ข้อ 5 ของใช้ในบ้าน + ยอดขาย > 50", category="structure", sheet_name="ข้อ 5",
+                rule_config={
+                    "require_autofilter": True,
+                    "filter_conditions": [
+                        {"column": "ประเภท", "operator": "equals", "value": "ของใช้ในบ้าน"},
+                        {"column": "ยอดขาย", "operator": "gt", "value": 50},
+                    ],
+                },
+                max_points=2.0,
+            ),
+            RubricItemConfig(
+                id="q6", title="ข้อ 6 ยกเลิกตัวกรอง ครบ 30 รายการ", category="structure", sheet_name="ข้อ 6",
+                rule_config={"require_no_active_filter": True, "expected_visible_rows": 30},
+                max_points=2.0,
+            ),
+        ],
+    )
+    engine = ExcelGradingEngine(enable_libreoffice=False)
+    res = engine.grade(stu_path, rubric)
+    assert res.auto_score == 12.0
+    assert len(res.errors) == 0
+
+
+
 
 

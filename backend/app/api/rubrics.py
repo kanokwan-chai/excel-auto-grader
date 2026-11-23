@@ -286,8 +286,126 @@ def expand_natural_language_rubric(
     items: list[dict[str, Any]] = []
     seen_keys: set[str] = set()
 
+    # 1.5 Multi-Tab / Numbered Filter Exercises Parser (e.g. "ข้อ 1 ... ข้อ 2 ... ข้อ 6 ยกเลิกตัวกรอง")
+    numbered_blocks = list(re.finditer(r"(?:^|\n)\s*[-•*]?\s*ข้อ\s*(\d+)[^\n]*", text))
+    if len(numbered_blocks) >= 2 and re.search(r"กรอง|filter|ตัวกรอง|ยกเลิกตัวกรอง", text, re.IGNORECASE):
+        for b_idx, m_blk in enumerate(numbered_blocks):
+            q_num = int(m_blk.group(1))
+            start = m_blk.start()
+            end = numbered_blocks[b_idx + 1].start() if b_idx + 1 < len(numbered_blocks) else len(text)
+            blk_text = text[start:end].strip()
+            first_line = blk_text.splitlines()[0].lstrip("-•* ").strip()
+
+            # Pick matching sheet name from attached sample workbook if available, else "ข้อ N"
+            tab_name = f"ข้อ {q_num}"
+            if sample_sheets:
+                if 0 <= q_num - 1 < len(sample_sheets):
+                    tab_name = sample_sheets[q_num - 1]["name"]
+                for sh in sample_sheets:
+                    if re.search(rf"(?:ข้อ\s*|^){q_num}(?:\D|$)", sh["name"]):
+                        tab_name = sh["name"]
+                        break
+
+            # Case 1: Clear filter exercise
+            if re.search(r"ยกเลิกตัวกรอง|ล้างตัวกรอง|เอาตัวกรองออก|แสดง.*ปกติ", blk_text, re.IGNORECASE):
+                m_vis = re.search(r"(?:ครบ(?:ทั้ง)?|จำนวน|ทั้งหมด)\s*(\d+)\s*(?:รายการ|แถว|คน)", blk_text)
+                rule_cfg: dict[str, Any] = {"require_no_active_filter": True}
+                if m_vis:
+                    rule_cfg["expected_visible_rows"] = int(m_vis.group(1))
+                items.append({
+                    "title": first_line[:90],
+                    "description": f"ตรวจแท็บ '{tab_name}': ยกเลิกตัวกรองทั้งหมด" + (f" และแสดงครบ {m_vis.group(1)} รายการ" if m_vis else ""),
+                    "category": "structure",
+                    "sheet_name": tab_name,
+                    "target_cell": "",
+                    "rule_config": rule_cfg,
+                    "explicit_points": _extract_points_near(re.escape(first_line[:20])),
+                })
+                continue
+
+            # Case 2: Active filter conditions (supports text, numeric, exact, and multi-column AND!)
+            conds: list[dict[str, Any]] = []
+            col_hint_map = [
+                (r"ยี่ห้อ", "ยี่ห้อ"),
+                (r"ผู้จำหน่าย|ร้านค้า|จำหน่ายโดย", "ผู้จำหน่าย"),
+                (r"ประเภท|หมวดหมู่", "ประเภท"),
+                (r"ชื่อสินค้า|ชื่อ", "ชื่อสินค้า"),
+                (r"ยอดขาย|จำนวนขาย|จำนวน", "ยอดขาย"),
+                (r"ราคา", "ราคา"),
+            ]
+
+            def _guess_col(snippet: str) -> str:
+                for pat, col_label in col_hint_map:
+                    if re.search(pat, snippet, re.IGNORECASE):
+                        return col_label
+                return ""
+
+            # Text Filter: starts_with / ends_with / contains / not_contains
+            m_starts = re.search(r"ขึ้นต้นด้วย(?:คำว่า)?\s*[`\"'“”]?([^`\"'“”\n,]+)[`\"'“”]?", blk_text)
+            if m_starts:
+                val = m_starts.group(1).strip().split()[0]
+                conds.append({"column": _guess_col(blk_text) or "ชื่อสินค้า", "operator": "starts_with", "value": val})
+
+            m_ends = re.search(r"ลงท้ายด้วย(?:คำว่า)?\s*[`\"'“”]?([^`\"'“”\n,]+)[`\"'“”]?", blk_text)
+            if m_ends:
+                val = m_ends.group(1).strip().split()[0]
+                conds.append({"column": _guess_col(blk_text) or "ชื่อสินค้า", "operator": "ends_with", "value": val})
+
+            m_contains = re.search(r"(?:มีคำว่า|ประกอบด้วยคำว่า)\s*[`\"'“”]?([^`\"'“”\n,]+)[`\"'“”]?", blk_text)
+            if m_contains:
+                val = m_contains.group(1).strip().split()[0]
+                conds.append({"column": _guess_col(blk_text) or "ชื่อสินค้า", "operator": "contains", "value": val})
+
+            # Numeric Filter: between / gte / gt / lte / lt
+            m_between = re.search(r"ระหว่าง\s*(\d+(?:\.\d+)?)\s*(?:ถึง|-)\s*(\d+(?:\.\d+)?)", blk_text)
+            if m_between:
+                conds.append({
+                    "column": _guess_col(blk_text) or "ยอดขาย",
+                    "operator": "between",
+                    "value": float(m_between.group(1)),
+                    "value2": float(m_between.group(2)),
+                })
+            else:
+                m_gte = re.search(r"(?:ตั้งแต่|มากกว่าหรือเท่ากับ|>=)\s*(\d+(?:\.\d+)?)", blk_text)
+                m_gt = re.search(r"(?:มากกว่า|เกิน|>)\s*(\d+(?:\.\d+)?)", blk_text)
+                m_lte = re.search(r"(?:ไม่เกิน|น้อยกว่าหรือเท่ากับ|<=)\s*(\d+(?:\.\d+)?)", blk_text)
+                m_lt = re.search(r"(?:น้อยกว่า|ต่ำกว่า|<)\s*(\d+(?:\.\d+)?)", blk_text)
+                if m_gte:
+                    conds.append({"column": _guess_col(blk_text) or "ยอดขาย", "operator": "gte", "value": float(m_gte.group(1))})
+                elif m_gt:
+                    conds.append({"column": _guess_col(blk_text) or "ยอดขาย", "operator": "gt", "value": float(m_gt.group(1))})
+                elif m_lte:
+                    conds.append({"column": _guess_col(blk_text) or "ยอดขาย", "operator": "lte", "value": float(m_lte.group(1))})
+                elif m_lt:
+                    conds.append({"column": _guess_col(blk_text) or "ยอดขาย", "operator": "lt", "value": float(m_lt.group(1))})
+
+            # Exact quoted / backtick value match (e.g. `Pentel`, `ร้านดิจิทัลพลัส`, `ของใช้ในบ้าน`)
+            existing_text_vals = {str(c.get("value", "")).lower() for c in conds}
+            for m_q in re.finditer(r"[`\"'“”]([^`\"'“”\n]{1,60})[`\"'“”]", blk_text):
+                q_val = m_q.group(1).strip()
+                if q_val.lower() in existing_text_vals:
+                    continue
+                # Look at text immediately before the quoted value to guess column name
+                prefix = blk_text[max(0, m_q.start() - 40) : m_q.start()]
+                col_guess = _guess_col(prefix) or _guess_col(blk_text)
+                conds.append({"column": col_guess, "operator": "equals", "value": q_val})
+
+            rule_cfg = {"require_autofilter": True, "require_filter_applied": True}
+            if conds:
+                rule_cfg["filter_conditions"] = conds
+            items.append({
+                "title": first_line[:90],
+                "description": f"ตรวจแท็บ '{tab_name}': " + (", ".join(f"{c.get('column') or 'คอลัมน์'} {c['operator']} {c['value']}" for c in conds) if conds else "กรองข้อมูลด้วย AutoFilter"),
+                "category": "structure",
+                "sheet_name": tab_name,
+                "target_cell": "",
+                "rule_config": rule_cfg,
+                "explicit_points": None,
+            })
+
     # 2. Detect Excel Formula Rules (Thai + English keywords)
-    formula_specs = [
+    multi_tab_filter_matched = len(items) >= 2
+    formula_specs = [] if multi_tab_filter_matched else [
         ("SUM", r"\bSUM\b|ผลรวม|หาผลรวม|บวกรวม", "ตรวจสูตรหาผลรวม (SUM)", "ตรวจสอบการใช้ฟังก์ชัน SUM และช่วงข้อมูลให้ถูกต้อง"),
         ("AVERAGE", r"\bAVERAGE\b|ค่าเฉลี่ย|หาค่าเฉลี่ย", "ตรวจสูตรหาค่าเฉลี่ย (AVERAGE)", "ตรวจสอบการใช้ฟังก์ชัน AVERAGE ในการหาค่าเฉลี่ย"),
         ("MAX", r"\bMAX\b|ค่าสูงสุด|มากที่สุด", "ตรวจสูตรหาค่าสูงสุด (MAX)", "ตรวจสอบการใช้ฟังก์ชัน MAX"),
@@ -337,7 +455,7 @@ def expand_natural_language_rubric(
             })
 
     # 3. Detect Value / Accuracy check
-    if re.search(r"ผลลัพธ์|คำตอบ|ค่าที่คำนวณ|ความถูกต้องของค่า|ห้ามขึ้น error", text, re.IGNORECASE):
+    if not multi_tab_filter_matched and re.search(r"ผลลัพธ์|คำตอบ|ค่าที่คำนวณ|ความถูกต้องของค่า|ห้ามขึ้น error", text, re.IGNORECASE):
         items.append({
             "title": "ตรวจความถูกต้องของผลลัพธ์ที่คำนวณได้",
             "description": "ตรวจสอบค่าผลลัพธ์หลังคำนวณและต้องไม่เกิดข้อผิดพลาด #DIV/0!, #VALUE!, #REF!, #NAME?",
@@ -361,7 +479,7 @@ def expand_natural_language_rubric(
         })
 
     # 5. Detect Styling / Decoration rules
-    if re.search(
+    if not multi_tab_filter_matched and re.search(
         r"ตกแต่ง|รูปแบบ|ตาราง|เส้นขอบ|border|ตัวหนา|bold|ตัวเอียง|italic|ฟอนต์|font|สี|ไฮไลท์|ทศนิยม|เปอร์เซ็นต์|ผสานเซลล์|merge|จัดกึ่งกลาง|จัดแนว|ความกว้าง|ความสวยงาม|wrap",
         text,
         re.IGNORECASE,
@@ -421,7 +539,7 @@ def expand_natural_language_rubric(
         })
 
     # 6. Detect Worksheet Structure
-    if re.search(r"ชีท|sheet|แผ่นงาน|ชื่อชีท", text, re.IGNORECASE):
+    if not multi_tab_filter_matched and re.search(r"ชีท|sheet|แผ่นงาน|ชื่อชีท", text, re.IGNORECASE):
         m_cnt = re.search(r"(\d+)\s*(?:ชีท|sheet|แผ่นงาน)", text, re.IGNORECASE)
         struct_cfg: dict[str, Any] = {"no_hidden_sheets": True}
         if m_cnt:
@@ -440,7 +558,7 @@ def expand_natural_language_rubric(
         })
 
     # 6b. Detect AutoFilter / Data Filter tool on table
-    if re.search(r"ตัวกรอง|กรองข้อมูล|autofilter|เปิด\s*filter|ปุ่มกรอง|คัดกรอง", text, re.IGNORECASE):
+    if not multi_tab_filter_matched and re.search(r"ตัวกรอง|กรองข้อมูล|autofilter|เปิด\s*filter|ปุ่มกรอง|คัดกรอง", text, re.IGNORECASE):
         require_applied = bool(re.search(r"กรองตามเงื่อนไข|กรองเฉพาะ|คัดกรองเฉพาะ|filter\s*applied|กรองข้อมูลแล้ว", text, re.IGNORECASE))
         af_cfg: dict[str, Any] = {"require_autofilter": True}
         if require_applied:
@@ -475,7 +593,7 @@ def expand_natural_language_rubric(
         })
 
     # 8. Detect Added Data / Completeness / Sorting according to instructions
-    if re.search(
+    if not multi_tab_filter_matched and re.search(
         r"ใส่ข้อมูลเพิ่ม|เพิ่มข้อมูล|กรอกข้อมูล|เพิ่มแถว|เพิ่มรายการ|เพิ่มคอลัมน์|เพิ่มช่อง|เติมข้อมูล|เรียงลำดับ|เรียงจากมากไปน้อย|เรียงจากน้อยไปมาก|ครบถ้วน|หัวตาราง|ข้อมูลครบ|ตามคำสั่ง",
         text,
         re.IGNORECASE,

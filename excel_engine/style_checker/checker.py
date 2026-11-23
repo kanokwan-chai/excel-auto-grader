@@ -770,60 +770,400 @@ def check_structure_item(
                 )
             )
 
-    if cfg.get("require_autofilter") or cfg.get("require_filter_applied"):
-        target_sheet = item.sheet_name or (sheet_names[0] if sheet_names else None)
-        ws = student_wb[target_sheet] if target_sheet and target_sheet in student_wb.sheetnames else None
-        has_sheet_af = bool(ws and getattr(ws, "auto_filter", None) and ws.auto_filter.ref)
-        has_table_af = False
-        has_table_filter_col = False
-        if ws and getattr(ws, "tables", None):
-            for tbl in ws.tables.values():
-                taf = getattr(tbl, "autoFilter", None)
-                if taf and getattr(taf, "ref", None):
-                    has_table_af = True
-                    if getattr(taf, "filterColumn", None):
-                        has_table_filter_col = True
-
-        total += 1
-        if has_sheet_af or has_table_af:
-            passed += 1
-        else:
+    if (
+        cfg.get("require_autofilter")
+        or cfg.get("require_filter_applied")
+        or cfg.get("require_no_active_filter")
+        or cfg.get("filter_conditions")
+    ):
+        ws, resolved_sheet = _resolve_worksheet_fuzzy(student_wb, item.sheet_name)
+        if ws is None:
+            total += 1
             errors.append(
                 GradingErrorRecord(
-                    error_code="MISSING_AUTOFILTER",
+                    error_code="MISSING_WORKSHEET",
                     severity="error",
-                    sheet_name=target_sheet,
-                    message_th="ยังไม่ได้เปิดใช้งานตัวกรองข้อมูล (Filter / AutoFilter) บนตาราง",
-                    expected_detail="เปิด AutoFilter",
-                    actual_detail="ไม่ได้เปิด AutoFilter",
-                    fix_suggestion_th="คลุมหัวตารางแล้วไปที่แท็บ Data > Filter (หรือกด Ctrl+Shift+L)",
+                    sheet_name=item.sheet_name,
+                    message_th=f"ไม่พบแผ่นงาน (แท็บ) '{item.sheet_name}' สำหรับตรวจตัวกรองข้อมูล",
+                    expected_detail=item.sheet_name or "",
+                    actual_detail=", ".join(sheet_names),
+                    fix_suggestion_th=f"ตรวจสอบชื่อแท็บแผ่นงานให้ตรงกับ '{item.sheet_name}'",
                 )
             )
+            return _build_ratio_result(item, passed, total, errors)
 
-        if cfg.get("require_filter_applied"):
+        af_ref, has_filter_col = _inspect_worksheet_autofilter(ws)
+        header_row, data_rows = _find_table_header_and_data_rows(ws, cfg, af_ref)
+        visible_rows = [r for r in data_rows if not bool(getattr(ws.row_dimensions[r], "hidden", False))]
+        hidden_rows = [r for r in data_rows if bool(getattr(ws.row_dimensions[r], "hidden", False))]
+
+        # Case A: Clear all filters check (e.g., ข้อ 6 ยกเลิกตัวกรองทั้งหมด แสดงครบ 30 รายการ)
+        if cfg.get("require_no_active_filter"):
             total += 1
-            sheet_filter_cols = bool(
-                ws and getattr(ws, "auto_filter", None) and len(getattr(ws.auto_filter, "filterColumn", []) or []) > 0
-            )
-            has_hidden_rows = bool(
-                ws and any(bool(getattr(dim, "hidden", False)) for dim in ws.row_dimensions.values())
-            )
-            if sheet_filter_cols or has_table_filter_col or has_hidden_rows:
+            if not has_filter_col and len(hidden_rows) == 0:
                 passed += 1
             else:
                 errors.append(
                     GradingErrorRecord(
-                        error_code="FILTER_NOT_APPLIED",
-                        severity="warning",
-                        sheet_name=target_sheet,
-                        message_th="เปิดปุ่ม Filter แล้ว แต่ยังไม่ได้เลือกเงื่อนไขกรองข้อมูล",
-                        expected_detail="มีการกรองข้อมูลตามเงื่อนไข",
-                        actual_detail="ยังแสดงข้อมูลครบทุกแถว (ไม่ได้กรอง)",
-                        fix_suggestion_th="คลิกปุ่มลูกศร Filter ที่หัวคอลัมน์แล้วเลือกเงื่อนไขกรองตามโจทย์",
+                        error_code="FILTER_STILL_ACTIVE",
+                        severity="error",
+                        sheet_name=resolved_sheet,
+                        message_th=(
+                            f"แท็บ '{resolved_sheet}' ยังไม่ได้ยกเลิกตัวกรองข้อมูลทั้งหมด "
+                            f"(ยังมีแถวที่ถูกซ่อนอยู่ {len(hidden_rows)} แถว)"
+                        ),
+                        expected_detail="ไม่มีตัวกรองค้างอยู่และไม่มีแถวที่ถูกซ่อน",
+                        actual_detail=f"ซ่อนอยู่ {len(hidden_rows)} แถว",
+                        fix_suggestion_th="ไปที่แท็บ Data > Clear (ล้างตัวกรอง) เพื่อให้ข้อมูลกลับมาแสดงครบทุกแถว",
                     )
                 )
 
+            exp_vis = cfg.get("expected_visible_rows") or cfg.get("min_visible_rows")
+            if exp_vis is not None:
+                total += 1
+                exp_vis_int = int(exp_vis)
+                if len(visible_rows) >= exp_vis_int:
+                    passed += 1
+                else:
+                    errors.append(
+                        GradingErrorRecord(
+                            error_code="INSUFFICIENT_VISIBLE_ROWS",
+                            severity="error",
+                            sheet_name=resolved_sheet,
+                            message_th=(
+                                f"แท็บ '{resolved_sheet}' แสดงข้อมูลไม่ครบตามกำหนด "
+                                f"(แสดงอยู่ {len(visible_rows)} รายการ ควรแสดงครบ {exp_vis_int} รายการ)"
+                            ),
+                            expected_detail=f"{exp_vis_int} รายการ",
+                            actual_detail=f"{len(visible_rows)} รายการ",
+                            fix_suggestion_th=f"ยกเลิกตัวกรองข้อมูลทั้งหมดเพื่อให้แสดงครบ {exp_vis_int} รายการ",
+                        )
+                    )
+        else:
+            # Case B: AutoFilter enabled check
+            if cfg.get("require_autofilter") or cfg.get("require_filter_applied") or cfg.get("filter_conditions"):
+                total += 1
+                if af_ref:
+                    passed += 1
+                else:
+                    errors.append(
+                        GradingErrorRecord(
+                            error_code="MISSING_AUTOFILTER",
+                            severity="error",
+                            sheet_name=resolved_sheet,
+                            message_th=f"แท็บ '{resolved_sheet}' ยังไม่ได้เปิดใช้งานตัวกรองข้อมูล (Filter / AutoFilter)",
+                            expected_detail="เปิด AutoFilter",
+                            actual_detail="ไม่ได้เปิด AutoFilter",
+                            fix_suggestion_th="คลุมหัวตารางแล้วไปที่แท็บ Data > Filter (หรือกด Ctrl+Shift+L)",
+                        )
+                    )
+
+            # Case C: At least one filter applied
+            if cfg.get("require_filter_applied") and not cfg.get("filter_conditions"):
+                total += 1
+                if has_filter_col or len(hidden_rows) > 0:
+                    passed += 1
+                else:
+                    errors.append(
+                        GradingErrorRecord(
+                            error_code="FILTER_NOT_APPLIED",
+                            severity="warning",
+                            sheet_name=resolved_sheet,
+                            message_th=f"แท็บ '{resolved_sheet}' เปิดปุ่ม Filter แล้ว แต่ยังไม่ได้เลือกเงื่อนไขกรองข้อมูล",
+                            expected_detail="มีการกรองข้อมูลตามเงื่อนไข",
+                            actual_detail="ยังแสดงข้อมูลครบทุกแถว (ไม่ได้กรอง)",
+                            fix_suggestion_th="คลิกปุ่มลูกศร Filter ที่หัวคอลัมน์แล้วเลือกเงื่อนไขกรองตามโจทย์",
+                        )
+                    )
+
+            # Case D: Detailed filter_conditions verification (supports ALL operators & multi-column AND!)
+            conditions = cfg.get("filter_conditions") or []
+            if conditions and data_rows:
+                total += 1
+                cond_evals: list[tuple[int | None, dict[str, Any]]] = []
+                missing_cols: list[str] = []
+                for cond in conditions:
+                    col_idx = _resolve_filter_column_index(ws, header_row, data_rows, cond)
+                    if col_idx is None:
+                        missing_cols.append(str(cond.get("column") or cond.get("value") or "?"))
+                    cond_evals.append((col_idx, cond))
+
+                if missing_cols:
+                    errors.append(
+                        GradingErrorRecord(
+                            error_code="FILTER_COLUMN_NOT_FOUND",
+                            severity="error",
+                            sheet_name=resolved_sheet,
+                            message_th=f"แท็บ '{resolved_sheet}' ไม่พบคอลัมน์สำหรับเงื่อนไขกรอง: {', '.join(missing_cols)}",
+                            fix_suggestion_th="ตรวจสอบชื่อหัวคอลัมน์หรือตำแหน่งตารางให้ครบถ้วน",
+                        )
+                    )
+                else:
+                    expected_match_rows = [
+                        r
+                        for r in data_rows
+                        if all(
+                            _eval_filter_condition(
+                                ws.cell(row=r, column=c_idx).value,
+                                str(cond.get("operator") or "equals"),
+                                cond.get("value"),
+                                cond.get("value2"),
+                            )
+                            for c_idx, cond in cond_evals
+                            if c_idx is not None
+                        )
+                    ]
+                    expected_set = set(expected_match_rows)
+                    visible_set = set(visible_rows)
+                    wrongly_visible = visible_set - expected_set
+                    wrongly_hidden = expected_set - visible_set
+
+                    if len(wrongly_visible) == 0 and len(wrongly_hidden) == 0 and (len(expected_set) == 0 or len(visible_set) > 0):
+                        passed += 1
+                    else:
+                        reason_parts = []
+                        if len(hidden_rows) == 0 and len(expected_set) < len(data_rows):
+                            reason_parts.append("ยังไม่ได้กรองข้อมูล (ยังคงแสดงครบทุกแถว)")
+                        else:
+                            if wrongly_visible:
+                                reason_parts.append(f"มีแถวที่ไม่ตรงเงื่อนไขแสดงเกินมา {len(wrongly_visible)} แถว")
+                            if wrongly_hidden:
+                                reason_parts.append(f"มีแถวที่ตรงเงื่อนไขถูกซ่อนหายไป {len(wrongly_hidden)} แถว")
+                        cond_desc = " และ ".join(_format_filter_condition_th(c) for c in conditions)
+                        errors.append(
+                            GradingErrorRecord(
+                                error_code="FILTER_CONDITION_MISMATCH",
+                                severity="error",
+                                sheet_name=resolved_sheet,
+                                message_th=(
+                                    f"แท็บ '{resolved_sheet}' ผลการกรองไม่ตรงเงื่อนไข ({cond_desc}): "
+                                    + " / ".join(reason_parts)
+                                ),
+                                expected_detail=f"ควรแสดงเฉพาะ {len(expected_set)} แถวที่ตรงเงื่อนไข ({cond_desc})",
+                                actual_detail=f"แสดงอยู่ {len(visible_set)} แถว",
+                                fix_suggestion_th=f"ตั้งค่าตัวกรองข้อมูลในแท็บ '{resolved_sheet}' ให้ตรงเงื่อนไข: {cond_desc}",
+                            )
+                        )
+
     return _build_ratio_result(item, passed, total, errors)
+
+
+def _resolve_worksheet_fuzzy(wb: Workbook, requested_name: str | None) -> tuple[Any | None, str]:
+    """Find worksheet by exact name, normalized name, Thai number match ('ข้อ 1' -> 'ข้อ1'), or tab index."""
+    import re
+
+    names = list(wb.sheetnames)
+    if not names:
+        return None, requested_name or ""
+    if not requested_name or not requested_name.strip():
+        return wb[names[0]], names[0]
+
+    req = requested_name.strip()
+    if req in wb.sheetnames:
+        return wb[req], req
+
+    norm_req = re.sub(r"\s+", "", req).lower()
+    for n in names:
+        if re.sub(r"\s+", "", n).lower() == norm_req:
+            return wb[n], n
+    for n in names:
+        norm_n = re.sub(r"\s+", "", n).lower()
+        if norm_req in norm_n or norm_n in norm_req:
+            return wb[n], n
+
+    # Match by exercise number (e.g. "ข้อ 3" -> tab containing "3" or 3rd tab)
+    m_num = re.search(r"(\d+)", req)
+    if m_num:
+        num_str = m_num.group(1)
+        for n in names:
+            if re.search(rf"(?:ข้อ\s*|sheet\s*|^){num_str}(?:\D|$)", n, re.IGNORECASE):
+                return wb[n], n
+        idx = int(num_str) - 1
+        if 0 <= idx < len(names):
+            return wb[names[idx]], names[idx]
+
+    return None, req
+
+
+def _inspect_worksheet_autofilter(ws: Any) -> tuple[str | None, bool]:
+    """Return (autofilter_ref, has_active_filter_column) from sheet auto_filter or Excel Table."""
+    af = getattr(ws, "auto_filter", None)
+    if af and getattr(af, "ref", None):
+        has_col = len(getattr(af, "filterColumn", []) or []) > 0
+        return str(af.ref), has_col
+
+    if getattr(ws, "tables", None):
+        for tbl in ws.tables.values():
+            taf = getattr(tbl, "autoFilter", None)
+            if taf and getattr(taf, "ref", None):
+                has_col = len(getattr(taf, "filterColumn", []) or []) > 0
+                return str(taf.ref), has_col
+    return None, False
+
+
+def _find_table_header_and_data_rows(ws: Any, cfg: dict[str, Any], af_ref: str | None) -> tuple[int, list[int]]:
+    """Detect header row and all non-empty data row indices below it."""
+    import re
+
+    header_row: int | None = int(cfg["header_row"]) if cfg.get("header_row") else None
+    max_r = min(ws.max_row or 0, 2000)
+    max_c = min(ws.max_column or 0, 50)
+
+    if header_row is None and af_ref:
+        m = re.match(r"^[A-Za-z]+(\d+):[A-Za-z]+(\d+)$", af_ref.replace("$", ""))
+        if m:
+            header_row = int(m.group(1))
+
+    if header_row is None:
+        for r in range(1, min(max_r, 10) + 1):
+            non_empty = [ws.cell(row=r, column=c).value for c in range(1, max_c + 1) if ws.cell(row=r, column=c).value is not None]
+            if len(non_empty) >= 2:
+                header_row = r
+                break
+        if header_row is None:
+            header_row = 1
+
+    data_rows: list[int] = []
+    for r in range(header_row + 1, max_r + 1):
+        if any(ws.cell(row=r, column=c).value is not None and str(ws.cell(row=r, column=c).value).strip() != "" for c in range(1, max_c + 1)):
+            data_rows.append(r)
+    return header_row, data_rows
+
+
+def _resolve_filter_column_index(
+    ws: Any,
+    header_row: int,
+    data_rows: list[int],
+    cond: dict[str, Any],
+) -> int | None:
+    """Resolve column index from letter ('C'), header text ('ยี่ห้อ'), or auto-detect from data."""
+    import re
+    from openpyxl.utils import column_index_from_string
+
+    max_c = min(ws.max_column or 0, 50)
+    col_spec = str(cond.get("column") or "").strip()
+
+    if col_spec:
+        if re.fullmatch(r"[A-Za-z]{1,2}", col_spec):
+            return column_index_from_string(col_spec.upper())
+
+        spec_low = col_spec.lower()
+        # Exact header match first
+        for c in range(1, max_c + 1):
+            hv = str(ws.cell(row=header_row, column=c).value or "").strip().lower()
+            if hv == spec_low:
+                return c
+        # Substring header match
+        for c in range(1, max_c + 1):
+            hv = str(ws.cell(row=header_row, column=c).value or "").strip().lower()
+            if hv and (spec_low in hv or hv in spec_low):
+                return c
+
+    # Auto-detect column by scanning which column has values matching the condition
+    op = str(cond.get("operator") or "equals").lower()
+    val = cond.get("value")
+    val2 = cond.get("value2")
+    best_col = None
+    best_hits = 0
+    for c in range(1, max_c + 1):
+        hits = 0
+        for r in data_rows:
+            cell_v = ws.cell(row=r, column=c).value
+            if cell_v is None:
+                continue
+            if _eval_filter_condition(cell_v, op, val, val2):
+                hits += 1
+        if hits > best_hits:
+            best_hits = hits
+            best_col = c
+    return best_col
+
+
+def _to_float_safe(v: Any) -> float | None:
+    if isinstance(v, bool) or v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        cleaned = str(v).strip().replace(",", "").replace("฿", "").replace("%", "")
+        return float(cleaned)
+    except (ValueError, TypeError):
+        return None
+
+
+def _eval_filter_condition(cell_val: Any, operator: str, value: Any, value2: Any = None) -> bool:
+    op = (operator or "equals").strip().lower()
+    if cell_val is None:
+        return False
+
+    # Numeric operators
+    if op in ("gt", "gte", "lt", "lte", "between"):
+        num = _to_float_safe(cell_val)
+        t1 = _to_float_safe(value)
+        if num is None or t1 is None:
+            return False
+        if op == "gt":
+            return num > t1
+        if op == "gte":
+            return num >= t1
+        if op == "lt":
+            return num < t1
+        if op == "lte":
+            return num <= t1
+        if op == "between":
+            t2 = _to_float_safe(value2)
+            if t2 is None and isinstance(value, (list, tuple)) and len(value) >= 2:
+                t1 = _to_float_safe(value[0])
+                t2 = _to_float_safe(value[1])
+            if t1 is None or t2 is None:
+                return False
+            return min(t1, t2) <= num <= max(t1, t2)
+
+    s_cell = str(cell_val).strip().lower()
+    if op == "in" and isinstance(value, (list, tuple, set)):
+        targets = {str(x).strip().lower() for x in value}
+        return s_cell in targets
+
+    s_val = str(value if value is not None else "").strip().lower()
+    if op == "equals":
+        num_c = _to_float_safe(cell_val)
+        num_v = _to_float_safe(value)
+        if num_c is not None and num_v is not None:
+            return abs(num_c - num_v) < 1e-9
+        return s_cell == s_val
+    if op == "not_equals":
+        return not _eval_filter_condition(cell_val, "equals", value)
+    if op == "contains":
+        return s_val in s_cell
+    if op == "not_contains":
+        return s_val not in s_cell
+    if op == "starts_with":
+        return s_cell.startswith(s_val)
+    if op == "ends_with":
+        return s_cell.endswith(s_val)
+    return s_cell == s_val
+
+
+def _format_filter_condition_th(cond: dict[str, Any]) -> str:
+    col = cond.get("column") or "ข้อมูล"
+    op = str(cond.get("operator") or "equals").lower()
+    val = cond.get("value")
+    val2 = cond.get("value2")
+    op_map = {
+        "equals": f"{col} = '{val}'",
+        "not_equals": f"{col} ≠ '{val}'",
+        "contains": f"{col} มีคำว่า '{val}'",
+        "not_contains": f"{col} ไม่มีคำว่า '{val}'",
+        "starts_with": f"{col} ขึ้นต้นด้วย '{val}'",
+        "ends_with": f"{col} ลงท้ายด้วย '{val}'",
+        "gt": f"{col} > {val}",
+        "gte": f"{col} >= {val}",
+        "lt": f"{col} < {val}",
+        "lte": f"{col} <= {val}",
+        "between": f"{col} ระหว่าง {val} ถึง {val2}",
+        "in": f"{col} อยู่ใน {val}",
+    }
+    return op_map.get(op, f"{col} {op} {val}")
 
 
 def check_completeness_item(
