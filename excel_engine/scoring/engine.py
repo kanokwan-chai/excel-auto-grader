@@ -11,6 +11,7 @@ Pipeline:
 
 from __future__ import annotations
 
+import gc
 import shutil
 import tempfile
 from pathlib import Path
@@ -153,3 +154,4 @@ class ExcelGradingEngine:
             if ref_loaded:
                 ref_loaded.close()
             shutil.rmtree(temp_dir, ignore_errors=True)
+            gc.collect()

@@ -102,6 +102,8 @@ export default function GradingUploadPage() {
     }
   };
 
+  const [gradingProgress, setGradingProgress] = useState<string | null>(null);
+
   const handleRunGrading = async () => {
     if (!assignmentId || !rubricId) return;
     if (selectedSubIds.length === 0) {
@@ -110,21 +112,40 @@ export default function GradingUploadPage() {
     }
     setGrading(true);
     setError(null);
+    setGradingProgress(null);
+    const BATCH_SIZE = 5;
+    let totalProcessed = 0;
+    let totalFailed = 0;
     try {
-      const res = await apiRequest<{ processed_files: number; failed_files: number }>("/grading/run", {
-        method: "POST",
-        body: JSON.stringify({
-          assignment_id: assignmentId,
-          rubric_id: rubricId,
-          submission_ids: selectedSubIds,
-        }),
-      });
-      setLastJob(res);
-      toast(`วิเคราะห์คะแนนเสร็จสิ้น ${res.processed_files} รายการ`);
+      const totalBatches = Math.ceil(selectedSubIds.length / BATCH_SIZE);
+      for (let i = 0; i < selectedSubIds.length; i += BATCH_SIZE) {
+        const chunk = selectedSubIds.slice(i, i + BATCH_SIZE);
+        const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+        setGradingProgress(
+          `กำลังตรวจชุดที่ ${batchNum}/${totalBatches} (เสร็จแล้ว ${totalProcessed}/${selectedSubIds.length} คน)...`
+        );
+        const res = await apiRequest<{ processed_files: number; failed_files: number }>("/grading/run", {
+          method: "POST",
+          body: JSON.stringify({
+            assignment_id: assignmentId,
+            rubric_id: rubricId,
+            submission_ids: chunk,
+          }),
+        });
+        totalProcessed += res.processed_files;
+        totalFailed += res.failed_files;
+      }
+      setLastJob({ processed_files: totalProcessed, failed_files: totalFailed });
+      toast(`วิเคราะห์คะแนนเสร็จสิ้น ${totalProcessed} รายการ`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "เริ่มตรวจงานไม่สำเร็จ");
+      setError(
+        err instanceof Error
+          ? `${err.message}${totalProcessed > 0 ? ` (ตรวจสำเร็จไปแล้ว ${totalProcessed} คน)` : ""}`
+          : "เริ่มตรวจงานไม่สำเร็จ"
+      );
     } finally {
       setGrading(false);
+      setGradingProgress(null);
     }
   };
 
@@ -138,6 +159,11 @@ export default function GradingUploadPage() {
       </div>
 
       {error && <ErrorBanner message={error} />}
+      {gradingProgress && (
+        <div className="rounded-2xl border-2 border-[#B3E89C] bg-[#EEFCE7] px-4 py-3 text-sm font-semibold text-[#1E5626] animate-pulse">
+          ⏳ {gradingProgress}
+        </div>
+      )}
 
       <Card className="grid gap-4 sm:grid-cols-2">
         <div>

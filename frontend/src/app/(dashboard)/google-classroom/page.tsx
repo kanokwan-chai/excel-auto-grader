@@ -192,33 +192,73 @@ export default function GoogleClassroomWizardPage() {
     }
   };
 
+  const [batchProgress, setBatchProgress] = useState<string | null>(null);
+
   const handleRunWizardGrading = async () => {
     if (!selectedAccountId || !selectedCourse || !selectedAssignment || !selectedRubricId) return;
+    const targetIds =
+      selectedSubIds.length > 0
+        ? selectedSubIds
+        : submissions.filter((s) => s.ui_status === "ready_for_grading").map((s) => s.id);
+    if (targetIds.length === 0) {
+      toast("ไม่พบไฟล์ Excel ที่พร้อมตรวจ", "error");
+      return;
+    }
+
     setLoading(true);
     setError(null);
+    setBatchProgress(null);
+    const BATCH_SIZE = 4;
+    let totalGraded = 0;
+    let totalFailed = 0;
+    let lastJobId = "";
+    let lastAssignId = "";
+
     try {
-      const res = await apiRequest<{
-        job_id: string;
-        assignment_id: string;
-        graded_count: number;
-        failed_count: number;
-      }>("/classroom/wizard/grade", {
-        method: "POST",
-        body: JSON.stringify({
-          google_connection_id: selectedAccountId,
-          google_classroom_id: selectedCourse.id,
-          classroom_assignment_id: selectedAssignment.id,
-          rubric_id: selectedRubricId,
-          classroom_submission_ids: selectedSubIds.length > 0 ? selectedSubIds : undefined,
-        }),
+      const totalBatches = Math.ceil(targetIds.length / BATCH_SIZE);
+      for (let i = 0; i < targetIds.length; i += BATCH_SIZE) {
+        const chunk = targetIds.slice(i, i + BATCH_SIZE);
+        const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+        setBatchProgress(
+          `กำลังดาวน์โหลดและตรวจชุดที่ ${batchNum}/${totalBatches} (เสร็จแล้ว ${totalGraded}/${targetIds.length} คน)...`
+        );
+        const res = await apiRequest<{
+          job_id: string;
+          assignment_id: string;
+          graded_count: number;
+          failed_count: number;
+        }>("/classroom/wizard/grade", {
+          method: "POST",
+          body: JSON.stringify({
+            google_connection_id: selectedAccountId,
+            google_classroom_id: selectedCourse.id,
+            classroom_assignment_id: selectedAssignment.id,
+            rubric_id: selectedRubricId,
+            classroom_submission_ids: chunk,
+          }),
+        });
+        totalGraded += res.graded_count;
+        totalFailed += res.failed_count;
+        lastJobId = res.job_id;
+        lastAssignId = res.assignment_id;
+      }
+      setGradingResult({
+        job_id: lastJobId,
+        assignment_id: lastAssignId,
+        graded_count: totalGraded,
+        failed_count: totalFailed,
       });
-      setGradingResult(res);
-      toast(`ตรวจงานเสร็จสิ้น ${res.graded_count} ไฟล์`);
+      toast(`ตรวจงานเสร็จสิ้น ${totalGraded} ไฟล์`);
       setStep(8);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "การตรวจงานขัดข้อง");
+      setError(
+        err instanceof Error
+          ? `${err.message}${totalGraded > 0 ? ` (ตรวจสำเร็จไปแล้ว ${totalGraded} คน)` : ""}`
+          : "การตรวจงานขัดข้อง"
+      );
     } finally {
       setLoading(false);
+      setBatchProgress(null);
     }
   };
 
@@ -304,6 +344,11 @@ export default function GoogleClassroomWizardPage() {
       </Card>
 
       {error && <ErrorBanner message={error} />}
+      {batchProgress && (
+        <div className="rounded-2xl border-2 border-[#B3E89C] bg-[#EEFCE7] px-4 py-3 text-sm font-semibold text-[#1E5626] animate-pulse">
+          ⏳ {batchProgress}
+        </div>
+      )}
 
       {/* STEP 1: Select Google Account */}
       {step === 1 && (
