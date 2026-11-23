@@ -1385,11 +1385,21 @@ def _build_ratio_result(
         suggestion = None
     elif item.zero_on_error:
         earned = 0.0
-        reason = f"ไม่ผ่านเกณฑ์ ({passed}/{total} รายการ) — เกณฑ์กำหนดให้ได้ 0 คะแนน"
+        err_detail = "; ".join(e.message_th for e in errors[:2]) if errors else ""
+        reason = (
+            f"ไม่ผ่านเกณฑ์ ({passed}/{total} รายการ): {err_detail}"
+            if err_detail
+            else f"ไม่ผ่านเกณฑ์ ({passed}/{total} รายการ) — เกณฑ์กำหนดให้ได้ 0 คะแนน"
+        )
         suggestion = errors[0].fix_suggestion_th if errors else None
     elif item.allow_partial_credit:
         earned = round(item.max_points * (passed / total), 2)
-        reason = f"ผ่านบางส่วน {passed}/{total} รายการ"
+        err_detail = "; ".join(e.message_th for e in errors[:2]) if errors else ""
+        reason = (
+            f"ผ่านบางส่วน {passed}/{total} รายการ: {err_detail}"
+            if err_detail
+            else f"ผ่านบางส่วน {passed}/{total} รายการ"
+        )
         suggestion = errors[0].fix_suggestion_th if errors else None
     else:
         earned = 0.0

@@ -335,10 +335,15 @@ def expand_natural_language_rubric(
             ]
 
             def _guess_col(snippet: str) -> str:
+                # Pick the RIGHTMOST (closest) column keyword appearing immediately before the condition!
+                best_label = ""
+                best_pos = -1
                 for pat, col_label in col_hint_map:
-                    if re.search(pat, snippet, re.IGNORECASE):
-                        return col_label
-                return ""
+                    for m_col in re.finditer(pat, snippet, re.IGNORECASE):
+                        if m_col.end() > best_pos:
+                            best_pos = m_col.end()
+                            best_label = col_label
+                return best_label
 
             # Text Filter: starts_with / ends_with / contains / not_contains
             m_starts = re.search(r"ขึ้นต้นด้วย(?:คำว่า)?\s*[`\"'“”]?([^`\"'“”\n,]+)[`\"'“”]?", blk_text)
