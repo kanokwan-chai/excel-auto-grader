@@ -979,12 +979,12 @@ def _resolve_worksheet_fuzzy(wb: Workbook, requested_name: str | None) -> tuple[
         if norm_req in norm_n or norm_n in norm_req:
             return wb[n], n
 
-    # Match by exercise number (e.g. "ข้อ 3" -> tab containing "3" or 3rd tab)
+    # Match by exercise number (e.g. "ข้อ 3" -> "ข้อที่3", "ข้อ 3", "ข้อ3", or 3rd tab)
     m_num = re.search(r"(\d+)", req)
     if m_num:
         num_str = m_num.group(1)
         for n in names:
-            if re.search(rf"(?:ข้อ\s*|sheet\s*|^){num_str}(?:\D|$)", n, re.IGNORECASE):
+            if re.search(rf"(?:ข้อ(?:ที่)?\s*|sheet\s*|^){num_str}(?:\D|$)", n, re.IGNORECASE):
                 return wb[n], n
         idx = int(num_str) - 1
         if 0 <= idx < len(names):

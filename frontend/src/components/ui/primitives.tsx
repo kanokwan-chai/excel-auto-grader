@@ -253,7 +253,7 @@ export function Modal({
 }) {
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#142919]/30 p-4 backdrop-blur-xs">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#142919]/35 p-4 backdrop-blur-xs">
       <div
         className={cn(
           "clay-card w-full p-6 max-h-[90vh] overflow-y-auto",

@@ -449,7 +449,11 @@ async def get_grading_result_excel_preview(
                         "col_span": span[1],
                         "error_msg": err_msg,
                     })
-                rows_out.append({"row_num": r, "cells": row_cells})
+                rows_out.append({
+                    "row_num": r,
+                    "hidden": bool(getattr(f_ws.row_dimensions[r], "hidden", False)),
+                    "cells": row_cells,
+                })
 
             charts_out = []
             for ch in getattr(f_ws, "_charts", []) or []:
@@ -513,11 +517,22 @@ async def get_grading_result_excel_preview(
                     "data": data_points,
                 })
 
+            af_ref = getattr(getattr(f_ws, "auto_filter", None), "ref", None)
+            if not af_ref and getattr(f_ws, "tables", None):
+                for tbl in f_ws.tables.values():
+                    taf = getattr(tbl, "autoFilter", None)
+                    if taf and getattr(taf, "ref", None):
+                        af_ref = str(taf.ref)
+                        break
+            hidden_count = sum(1 for row_item in rows_out if row_item.get("hidden"))
+
             sheets_out.append({
                 "name": sname,
                 "col_headers": col_headers,
                 "rows": rows_out,
                 "charts": charts_out,
+                "auto_filter_ref": str(af_ref) if af_ref else None,
+                "hidden_row_count": hidden_count,
             })
 
         return {

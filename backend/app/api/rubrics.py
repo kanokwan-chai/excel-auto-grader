@@ -302,7 +302,7 @@ def expand_natural_language_rubric(
                 if 0 <= q_num - 1 < len(sample_sheets):
                     tab_name = sample_sheets[q_num - 1]["name"]
                 for sh in sample_sheets:
-                    if re.search(rf"(?:ข้อ\s*|^){q_num}(?:\D|$)", sh["name"]):
+                    if re.search(rf"(?:ข้อ(?:ที่)?\s*|^){q_num}(?:\D|$)", sh["name"]):
                         tab_name = sh["name"]
                         break
 

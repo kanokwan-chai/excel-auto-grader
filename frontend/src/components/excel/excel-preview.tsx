@@ -45,8 +45,10 @@ export interface PreviewCell {
 export interface PreviewSheet {
   name: string;
   col_headers: string[];
-  rows: { row_num: number; cells: PreviewCell[] }[];
+  rows: { row_num: number; hidden?: boolean; cells: PreviewCell[] }[];
   charts: PreviewChart[];
+  auto_filter_ref?: string | null;
+  hidden_row_count?: number;
 }
 
 export interface ExcelPreviewData {
@@ -65,8 +67,15 @@ export function ExcelSpreadsheetPreview({
   const [activeSheetIdx, setActiveSheetIdx] = useState(0);
   const [selectedCell, setSelectedCell] = useState<PreviewCell | null>(null);
   const [showFormulasInGrid, setShowFormulasInGrid] = useState(false);
+  const [showHiddenRows, setShowHiddenRows] = useState(false);
 
   const sheet = data.sheets[activeSheetIdx] || data.sheets[0];
+  const hiddenCount = sheet ? (sheet.hidden_row_count ?? sheet.rows.filter((r) => r.hidden).length) : 0;
+  const visibleRows = sheet
+    ? showHiddenRows
+      ? sheet.rows
+      : sheet.rows.filter((r) => !r.hidden)
+    : [];
 
   useEffect(() => {
     if (!sheet) return;
@@ -101,24 +110,44 @@ export function ExcelSpreadsheetPreview({
         <div className="flex items-center gap-2 min-w-0">
           <FileSpreadsheet className="h-4 w-4 shrink-0" />
           <span className="truncate text-xs font-semibold">{data.filename}</span>
+          {sheet.auto_filter_ref && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-sky-500/90 px-2 py-0.5 text-[10px] font-semibold">
+              🔍 Filter ({sheet.auto_filter_ref}){hiddenCount > 0 ? ` • ซ่อน ${hiddenCount} แถว` : " • แสดงทั้งหมด"}
+            </span>
+          )}
           {sheet.charts.length > 0 && (
             <span className="inline-flex items-center gap-1 rounded-full bg-emerald-600 px-2 py-0.5 text-[10px]">
               <BarChart3 className="h-3 w-3" /> {sheet.charts.length} แผนภูมิ
             </span>
           )}
         </div>
-        <button
-          type="button"
-          onClick={() => setShowFormulasInGrid((v) => !v)}
-          className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-medium transition ${
-            showFormulasInGrid
-              ? "bg-white text-emerald-800"
-              : "bg-emerald-600 text-white hover:bg-emerald-500"
-          }`}
-        >
-          {showFormulasInGrid ? <Table2 className="h-3.5 w-3.5" /> : <Code2 className="h-3.5 w-3.5" />}
-          {showFormulasInGrid ? "สลับดูค่าผลลัพธ์" : "แสดงสูตรทุกช่อง (=fx)"}
-        </button>
+        <div className="flex items-center gap-1.5">
+          {hiddenCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowHiddenRows((v) => !v)}
+              className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-medium transition ${
+                showHiddenRows
+                  ? "bg-amber-100 text-amber-900"
+                  : "bg-sky-600 text-white hover:bg-sky-500"
+              }`}
+            >
+              {showHiddenRows ? "ดูเฉพาะแถวที่กรอง" : `แสดงแถวที่ซ่อน (+${hiddenCount})`}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setShowFormulasInGrid((v) => !v)}
+            className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-medium transition ${
+              showFormulasInGrid
+                ? "bg-white text-emerald-800"
+                : "bg-emerald-600 text-white hover:bg-emerald-500"
+            }`}
+          >
+            {showFormulasInGrid ? <Table2 className="h-3.5 w-3.5" /> : <Code2 className="h-3.5 w-3.5" />}
+            {showFormulasInGrid ? "สลับดูค่าผลลัพธ์" : "แสดงสูตรทุกช่อง (=fx)"}
+          </button>
+        </div>
       </div>
 
       {/* Formula Bar (fx) */}
@@ -170,9 +199,15 @@ export function ExcelSpreadsheetPreview({
             </tr>
           </thead>
           <tbody>
-            {sheet.rows.map((row) => (
-              <tr key={row.row_num}>
-                <td className="sticky left-0 z-10 border border-slate-300 bg-slate-100 px-1.5 py-1 text-center text-[11px] font-medium text-slate-600 select-none">
+            {visibleRows.map((row) => (
+              <tr key={row.row_num} className={row.hidden ? "opacity-45" : ""}>
+                <td
+                  className={`sticky left-0 z-10 border border-slate-300 px-1.5 py-1 text-center text-[11px] select-none ${
+                    hiddenCount > 0 && !row.hidden
+                      ? "bg-sky-50 font-bold text-sky-700"
+                      : "bg-slate-100 font-medium text-slate-600"
+                  }`}
+                >
                   {row.row_num}
                 </td>
                 {row.cells.map((cell, cIdx) => {
