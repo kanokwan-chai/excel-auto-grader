@@ -299,6 +299,12 @@ def expand_natural_language_rubric(
         ("IF", r"\bIF\b|ตัดเกรด|เงื่อนไข|ผ่านไม่ผ่าน|ผ่าน/ไม่ผ่าน", "ตรวจสูตรเงื่อนไข (IF)", "ตรวจสอบการใช้ฟังก์ชัน IF และเงื่อนไขการประเมินผล"),
         ("VLOOKUP", r"\bVLOOKUP\b|ค้นหาข้อมูล|ดึงข้อมูลจากตาราง", "ตรวจสูตรค้นหาข้อมูล (VLOOKUP)", "ตรวจสอบฟังก์ชัน VLOOKUP ช่วงตาราง และคอลัมน์ผลลัพธ์"),
         ("XLOOKUP", r"\bXLOOKUP\b", "ตรวจสูตรค้นหาข้อมูล (XLOOKUP)", "ตรวจสอบฟังก์ชัน XLOOKUP"),
+        ("FILTER", r"\bFILTER\b|ฟังก์ชันกรอง|สูตรกรอง", "ตรวจสูตรกรองข้อมูล (FILTER)", "ตรวจสอบการใช้ฟังก์ชัน FILTER และเงื่อนไขการกรองข้อมูล"),
+        ("SORT", r"\bSORT\b|สูตรเรียงข้อมูล", "ตรวจสูตรเรียงลำดับ (SORT)", "ตรวจสอบการใช้ฟังก์ชัน SORT"),
+        ("SORTBY", r"\bSORTBY\b", "ตรวจสูตรเรียงลำดับตามเกณฑ์ (SORTBY)", "ตรวจสอบการใช้ฟังก์ชัน SORTBY"),
+        ("UNIQUE", r"\bUNIQUE\b|ค่าไม่ซ้ำ", "ตรวจสูตรดึงค่าไม่ซ้ำ (UNIQUE)", "ตรวจสอบการใช้ฟังก์ชัน UNIQUE"),
+        ("SUBTOTAL", r"\bSUBTOTAL\b|ผลรวมหลังกรอง", "ตรวจสูตรคำนวณหลังกรอง (SUBTOTAL)", "ตรวจสอบการใช้ฟังก์ชัน SUBTOTAL"),
+        ("AGGREGATE", r"\bAGGREGATE\b", "ตรวจสูตรคำนวณขั้นสูง (AGGREGATE)", "ตรวจสอบการใช้ฟังก์ชัน AGGREGATE"),
         ("RANK", r"\bRANK\b|จัดอันดับ|ลำดับที่", "ตรวจสูตรจัดอันดับ (RANK)", "ตรวจสอบฟังก์ชัน RANK"),
     ]
 
@@ -431,6 +437,22 @@ def expand_natural_language_rubric(
             "target_cell": "",
             "rule_config": struct_cfg,
             "explicit_points": _extract_points_near(r"ชีท|sheet|แผ่นงาน|โครงสร้าง"),
+        })
+
+    # 6b. Detect AutoFilter / Data Filter tool on table
+    if re.search(r"ตัวกรอง|กรองข้อมูล|autofilter|เปิด\s*filter|ปุ่มกรอง|คัดกรอง", text, re.IGNORECASE):
+        require_applied = bool(re.search(r"กรองตามเงื่อนไข|กรองเฉพาะ|คัดกรองเฉพาะ|filter\s*applied|กรองข้อมูลแล้ว", text, re.IGNORECASE))
+        af_cfg: dict[str, Any] = {"require_autofilter": True}
+        if require_applied:
+            af_cfg["require_filter_applied"] = True
+        items.append({
+            "title": "ตรวจการเปิดและใช้งานตัวกรองข้อมูล (AutoFilter)" if require_applied else "ตรวจการเปิดตัวกรองข้อมูล (AutoFilter)",
+            "description": "ตรวจสอบการเปิดปุ่ม Filter (Data > Filter) บนหัวตาราง" + (" และมีการกรองข้อมูลตามเงื่อนไข" if require_applied else ""),
+            "category": "structure",
+            "sheet_name": default_sheet,
+            "target_cell": "",
+            "rule_config": af_cfg,
+            "explicit_points": _extract_points_near(r"ตัวกรอง|กรองข้อมูล|autofilter|filter|คัดกรอง"),
         })
 
     # 7. Detect Chart

@@ -770,6 +770,59 @@ def check_structure_item(
                 )
             )
 
+    if cfg.get("require_autofilter") or cfg.get("require_filter_applied"):
+        target_sheet = item.sheet_name or (sheet_names[0] if sheet_names else None)
+        ws = student_wb[target_sheet] if target_sheet and target_sheet in student_wb.sheetnames else None
+        has_sheet_af = bool(ws and getattr(ws, "auto_filter", None) and ws.auto_filter.ref)
+        has_table_af = False
+        has_table_filter_col = False
+        if ws and getattr(ws, "tables", None):
+            for tbl in ws.tables.values():
+                taf = getattr(tbl, "autoFilter", None)
+                if taf and getattr(taf, "ref", None):
+                    has_table_af = True
+                    if getattr(taf, "filterColumn", None):
+                        has_table_filter_col = True
+
+        total += 1
+        if has_sheet_af or has_table_af:
+            passed += 1
+        else:
+            errors.append(
+                GradingErrorRecord(
+                    error_code="MISSING_AUTOFILTER",
+                    severity="error",
+                    sheet_name=target_sheet,
+                    message_th="ยังไม่ได้เปิดใช้งานตัวกรองข้อมูล (Filter / AutoFilter) บนตาราง",
+                    expected_detail="เปิด AutoFilter",
+                    actual_detail="ไม่ได้เปิด AutoFilter",
+                    fix_suggestion_th="คลุมหัวตารางแล้วไปที่แท็บ Data > Filter (หรือกด Ctrl+Shift+L)",
+                )
+            )
+
+        if cfg.get("require_filter_applied"):
+            total += 1
+            sheet_filter_cols = bool(
+                ws and getattr(ws, "auto_filter", None) and len(getattr(ws.auto_filter, "filterColumn", []) or []) > 0
+            )
+            has_hidden_rows = bool(
+                ws and any(bool(getattr(dim, "hidden", False)) for dim in ws.row_dimensions.values())
+            )
+            if sheet_filter_cols or has_table_filter_col or has_hidden_rows:
+                passed += 1
+            else:
+                errors.append(
+                    GradingErrorRecord(
+                        error_code="FILTER_NOT_APPLIED",
+                        severity="warning",
+                        sheet_name=target_sheet,
+                        message_th="เปิดปุ่ม Filter แล้ว แต่ยังไม่ได้เลือกเงื่อนไขกรองข้อมูล",
+                        expected_detail="มีการกรองข้อมูลตามเงื่อนไข",
+                        actual_detail="ยังแสดงข้อมูลครบทุกแถว (ไม่ได้กรอง)",
+                        fix_suggestion_th="คลิกปุ่มลูกศร Filter ที่หัวคอลัมน์แล้วเลือกเงื่อนไขกรองตามโจทย์",
+                    )
+                )
+
     return _build_ratio_result(item, passed, total, errors)
 
 

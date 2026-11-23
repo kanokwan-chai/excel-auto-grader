@@ -353,4 +353,46 @@ def test_15_aesthetics_matches_reference_layout_allows_any_color(tmp_excel_dir: 
     assert len(res.errors) == 0
 
 
+def test_16_filter_formula_xlws_prefix_and_autofilter(tmp_excel_dir: Path):
+    file_ok = create_sample_workbook(tmp_excel_dir / "filter_ok.xlsx")
+    wb = openpyxl.load_workbook(file_ok)
+    ws = wb["Scores"]
+    # Simulate Excel's internal _xlfn._xlws.FILTER prefix + active AutoFilter
+    ws["G2"] = '=_xlfn._xlws.FILTER(A2:E5, E2:E5="ผ่าน")'
+    ws.auto_filter.ref = "A1:E5"
+    ws.row_dimensions[4].hidden = True
+    wb.save(file_ok)
+
+    file_no_filter = create_sample_workbook(tmp_excel_dir / "filter_missing.xlsx")
+
+    rubric = RubricConfig(
+        total_points=10.0,
+        items=[
+            RubricItemConfig(
+                id="filter_fn",
+                title="ตรวจสูตร FILTER",
+                category="formula",
+                rule_config={"required_functions": ["FILTER"]},
+                max_points=5.0,
+            ),
+            RubricItemConfig(
+                id="autofilter",
+                title="ตรวจตัวกรองข้อมูล (AutoFilter)",
+                category="structure",
+                sheet_name="Scores",
+                rule_config={"require_autofilter": True, "require_filter_applied": True},
+                max_points=5.0,
+            ),
+        ],
+    )
+    engine = ExcelGradingEngine(enable_libreoffice=False)
+    res_ok = engine.grade(file_ok, rubric)
+    assert res_ok.auto_score == 10.0
+
+    res_bad = engine.grade(file_no_filter, rubric)
+    assert res_bad.auto_score == 0.0
+    assert any(e.error_code == "MISSING_AUTOFILTER" for e in res_bad.errors)
+
+
+
 

@@ -50,6 +50,12 @@ const FORMULA_PRESETS = [
   "VLOOKUP",
   "HLOOKUP",
   "XLOOKUP",
+  "FILTER",
+  "SORT",
+  "SORTBY",
+  "UNIQUE",
+  "SUBTOTAL",
+  "AGGREGATE",
   "INDEX",
   "MATCH",
   "RANK",
@@ -717,6 +723,65 @@ export default function RubricsPage() {
                   </button>
                 );
               })}
+            </div>
+            <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-indigo-100/80">
+              <span className="text-[11px] font-bold text-indigo-900">ตัวกรองตาราง (Data → Filter):</span>
+              <button
+                type="button"
+                onClick={() => {
+                  const exists = items.some((it) => it.category === "structure" && it.rule_config.require_autofilter && !it.rule_config.require_filter_applied);
+                  if (exists) {
+                    setItems((prev) => prev.filter((it) => !(it.category === "structure" && it.rule_config.require_autofilter && !it.rule_config.require_filter_applied)));
+                  } else {
+                    setItems((prev) => [
+                      ...prev,
+                      {
+                        ...makeEmptyItem(prev.length),
+                        title: "ตรวจการเปิดตัวกรองข้อมูล (AutoFilter)",
+                        category: "structure",
+                        sheet_name: sampleInfo?.sheet_names[0] || "",
+                        rule_config: { require_autofilter: true },
+                      },
+                    ]);
+                  }
+                }}
+                className={`inline-flex items-center gap-1 rounded-xl border px-2.5 py-1 text-xs font-semibold transition ${
+                  items.some((it) => it.category === "structure" && it.rule_config.require_autofilter && !it.rule_config.require_filter_applied)
+                    ? "border-emerald-600 bg-emerald-600 text-white shadow-xs"
+                    : "border-emerald-200 bg-white text-emerald-900 hover:bg-emerald-50"
+                }`}
+              >
+                <span>{items.some((it) => it.category === "structure" && it.rule_config.require_autofilter && !it.rule_config.require_filter_applied) ? "✓" : "+"}</span>
+                <span>เปิดปุ่ม Filter (AutoFilter)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const exists = items.some((it) => it.category === "structure" && it.rule_config.require_filter_applied);
+                  if (exists) {
+                    setItems((prev) => prev.filter((it) => !(it.category === "structure" && it.rule_config.require_filter_applied)));
+                  } else {
+                    setItems((prev) => [
+                      ...prev,
+                      {
+                        ...makeEmptyItem(prev.length),
+                        title: "ตรวจการกรองข้อมูลตามเงื่อนไข (Filter Applied)",
+                        category: "structure",
+                        sheet_name: sampleInfo?.sheet_names[0] || "",
+                        rule_config: { require_autofilter: true, require_filter_applied: true },
+                      },
+                    ]);
+                  }
+                }}
+                className={`inline-flex items-center gap-1 rounded-xl border px-2.5 py-1 text-xs font-semibold transition ${
+                  items.some((it) => it.category === "structure" && it.rule_config.require_filter_applied)
+                    ? "border-emerald-600 bg-emerald-600 text-white shadow-xs"
+                    : "border-emerald-200 bg-white text-emerald-900 hover:bg-emerald-50"
+                }`}
+              >
+                <span>{items.some((it) => it.category === "structure" && it.rule_config.require_filter_applied) ? "✓" : "+"}</span>
+                <span>เปิด Filter + กรองข้อมูลแล้ว</span>
+              </button>
             </div>
             <div className="flex gap-2 pt-1">
               <Input

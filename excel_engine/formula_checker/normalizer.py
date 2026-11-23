@@ -106,8 +106,8 @@ def normalize_formula(formula: str, preserve_absolute: bool = True) -> str:
     text = formula.strip()
     if text.startswith("="):
         text = text[1:]
-    # Handle openpyxl/Excel _xlfn. prefix for newer functions (e.g. XLOOKUP, IFS)
-    text = re.sub(r"(?i)_xlfn\.", "", text)
+    # Handle openpyxl/Excel _xlfn. / _xlws. / _xlpm. prefixes for modern dynamic-array functions (e.g. FILTER, SORT, UNIQUE, XLOOKUP, IFS)
+    text = re.sub(r"(?i)(?:_xlfn\.|_xlws\.|_xlpm\.)+", "", text)
     compact = _strip_whitespace_outside_strings(text)
     compact = _normalize_sheet_quotes(compact)
     if not preserve_absolute:
