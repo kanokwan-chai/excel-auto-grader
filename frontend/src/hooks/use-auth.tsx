@@ -2,7 +2,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { apiRequest, getSessionToken, setSessionToken } from "@/lib/api";
+import { ApiError, apiRequest, getSessionToken, setSessionToken, wakeUpBackend } from "@/lib/api";
 import type { TeacherProfile } from "@/types";
 
 interface AuthContextValue {
@@ -30,8 +30,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const me = await apiRequest<TeacherProfile>("/auth/me");
       setTeacher(me);
-    } catch {
-      setSessionToken(null);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        setSessionToken(null);
+      }
       setTeacher(null);
     } finally {
       setLoading(false);
@@ -39,6 +41,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    wakeUpBackend();
     refreshProfile();
   }, [refreshProfile]);
 

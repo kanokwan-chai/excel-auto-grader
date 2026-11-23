@@ -1,12 +1,14 @@
 /**
  * Typed Backend API Client for Excel Auto Grader.
  * Automatically attaches Bearer JWT from active teacher session.
+ * Includes Render cold-start auto-retry & background wake-up ping.
  * NEVER stores or reads Google OAuth tokens in Local Storage.
  */
 
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
 
+const BACKEND_ROOT_URL = API_BASE_URL.replace(/\/api\/v1\/?$/, "");
 const SESSION_TOKEN_KEY = "eag_teacher_session_jwt";
 
 export function getSessionToken(): string | null {
@@ -24,6 +26,14 @@ export function setSessionToken(token: string | null): void {
   }
 }
 
+/** Fire-and-forget ping to wake up Render Free Tier backend as soon as user opens the site. */
+export function wakeUpBackend(): void {
+  if (typeof window === "undefined") return;
+  fetch(`${BACKEND_ROOT_URL}/health`, { method: "GET", cache: "no-store" }).catch(() => {
+    // ignore wake-up errors silently
+  });
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(message: string, status: number) {
@@ -31,6 +41,8 @@ export class ApiError extends Error {
     this.status = status;
   }
 }
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function apiRequest<T>(
   path: string,
@@ -45,17 +57,37 @@ export async function apiRequest<T>(
     headers.set("Content-Type", "application/json");
   }
 
-  let res: Response;
-  try {
-    res = await fetch(`${API_BASE_URL}${path}`, {
-      ...options,
-      headers,
-    });
-  } catch {
-    throw new ApiError(
-      "ไม่สามารถติดต่อเซิร์ฟเวอร์ Backend ได้ (หากใช้ Render ฟรี เซิร์ฟเวอร์อาจกำลังตื่นหรือประมวลผลหนัก ลองกดใหม่อีกครั้งใน 10 วินาที)",
-      0
-    );
+  const method = (options.method || "GET").toUpperCase();
+  const isSafeToRetry = method === "GET" || path.startsWith("/auth/");
+  const retryDelays = isSafeToRetry ? [2500, 5000, 8000] : [3000, 6000];
+
+  let res: Response | null = null;
+  for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+    try {
+      res = await fetch(`${API_BASE_URL}${path}`, {
+        ...options,
+        headers,
+      });
+      // Render Free Tier returns 502/503/504 briefly while spinning up from sleep
+      if ((res.status === 502 || res.status === 503 || res.status === 504) && attempt < retryDelays.length) {
+        await sleep(retryDelays[attempt]);
+        continue;
+      }
+      break;
+    } catch {
+      if (attempt < retryDelays.length) {
+        await sleep(retryDelays[attempt]);
+        continue;
+      }
+      throw new ApiError(
+        "ไม่สามารถติดต่อเซิร์ฟเวอร์ Backend ได้ในขณะนี้ (Render Free Tier อาจกำลังปลุกเซิร์ฟเวอร์หรือประมวลผลไฟล์จำนวนมาก กรุณารอสักครู่แล้วกดลองใหม่)",
+        0
+      );
+    }
+  }
+
+  if (!res) {
+    throw new ApiError("ไม่สามารถติดต่อเซิร์ฟเวอร์ Backend ได้ กรุณาลองใหม่อีกครั้ง", 0);
   }
 
   if (!res.ok) {
