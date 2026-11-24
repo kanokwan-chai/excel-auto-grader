@@ -22,6 +22,20 @@ router = APIRouter(prefix="/rubrics", tags=["Rubrics"])
 settings = get_settings()
 
 
+def _sanitize_item_rule_cfg(rc: dict | None) -> dict:
+    out = dict(rc or {})
+    fcs = out.get("filter_conditions")
+    if isinstance(fcs, list):
+        cleaned = []
+        for c in fcs:
+            c2 = dict(c)
+            if str(c2.get("operator") or "").lower() in ("gt", "gte", "lt", "lte", "between") and str(c2.get("column") or "").strip() in ("ประเภท", "ประเภทสินค้า", "หมวดหมู่", "ยี่ห้อ", "ผู้จำหน่าย"):
+                c2["column"] = "ยอดขาย (ชิ้น)"
+            cleaned.append(c2)
+        out["filter_conditions"] = cleaned
+    return out
+
+
 def _serialize_rubric(r: GradingRubric) -> dict:
     enabled_sum = sum(float(i.max_points) for i in r.items if i.is_enabled)
     return {
@@ -43,7 +57,7 @@ def _serialize_rubric(r: GradingRubric) -> dict:
                 "category": i.category,
                 "sheet_name": i.sheet_name,
                 "target_cell": i.target_cell,
-                "rule_config": i.rule_config or {},
+                "rule_config": _sanitize_item_rule_cfg(i.rule_config),
                 "max_points": i.max_points,
                 "min_points": i.min_points,
                 "allow_partial_credit": i.allow_partial_credit,
