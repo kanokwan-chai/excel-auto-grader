@@ -1010,8 +1010,31 @@ async def batch_approve_and_push_grades(
     items = []
     pushed_count = 0
     failed_push_count = 0
+    short_circuit_msg: str | None = None
+
     for gr in results:
-        # Always refresh deduction-only comment if teacher hasn't customized it
+        if short_circuit_msg is not None:
+            # Fail-fast: assignment itself is blocked by Google ProjectPermissionDenied / missing scope.
+            # Confirm remaining students locally in DB without wasting 25+ doomed Google API calls!
+            concise_comment = (gr.teacher_comment or "").strip() or _build_concise_feedback_th(gr)
+            gr.teacher_comment = concise_comment
+            gr.is_confirmed = True
+            gr.status = "confirmed"
+            gr.confirmed_at = datetime.now(timezone.utc)
+            gr.confirmed_by = current_teacher.id
+            sub = db.query(Submission).filter(Submission.id == gr.submission_id).first()
+            items.append({
+                "result_id": gr.id,
+                "student_name": sub.student_display_name if sub else "-",
+                "final_score": gr.final_score,
+                "confirmed": True,
+                "pushed_to_classroom": False,
+                "concise_comment": concise_comment,
+                "classroom_message": short_circuit_msg,
+            })
+            failed_push_count += 1
+            continue
+
         res = await _approve_and_push_single(
             db=db,
             current_teacher=current_teacher,
@@ -1024,6 +1047,12 @@ async def batch_approve_and_push_grades(
             pushed_count += 1
         else:
             failed_push_count += 1
+            msg = str(res.get("classroom_message") or "")
+            if "ไม่อนุญาตให้แอปภายนอกเขียนคะแนน" in msg or "ยังไม่มีสิทธิ์ส่งคะแนน" in msg or "ไม่ได้เชื่อมต่อจาก Google Classroom" in msg:
+                short_circuit_msg = msg
+
+    if short_circuit_msg is not None:
+        db.commit()
 
     return {
         "total": len(items),

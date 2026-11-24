@@ -1,7 +1,20 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
-import { CheckCircle2, ClipboardCopy, Download, Edit3, Eye, FileDown, RefreshCw, Send, ShieldCheck, Unlock } from "lucide-react";
+import {
+  CheckCircle2,
+  ClipboardCopy,
+  Download,
+  Edit3,
+  ExternalLink,
+  Eye,
+  FileDown,
+  ListChecks,
+  RefreshCw,
+  Send,
+  ShieldCheck,
+  Unlock,
+} from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { apiRequest, downloadFileFromApi } from "@/lib/api";
 import type { AssignmentItem, GradingResultDetail, Rubric } from "@/types";
@@ -24,6 +37,7 @@ interface ClassReportResponse {
   summary: {
     assignment_id: string;
     assignment_title: string;
+    classroom_alternate_link?: string | null;
     last_rubric_id?: string | null;
     last_rubric_name?: string | null;
     last_rubric_version?: number | null;
@@ -85,6 +99,8 @@ export default function ReportsPage() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [batchPushing, setBatchPushing] = useState(false);
   const [batchResult, setBatchResult] = useState<BatchPushResponse | null>(null);
+  const [openQuickGradebook, setOpenQuickGradebook] = useState(false);
+  const [enteredInClassroomIds, setEnteredInClassroomIds] = useState<string[]>([]);
 
   // Instant re-grade without re-pulling from Classroom
   const [rubrics, setRubrics] = useState<Rubric[]>([]);
@@ -376,6 +392,27 @@ export default function ReportsPage() {
     } catch {
       toast("ไม่สามารถคัดลอกได้", "error");
     }
+  };
+
+  const handleCopyScoreSheetTSV = async () => {
+    if (!report) return;
+    const targetRows = report.rows.filter((r) => selectedIds.includes(r.result_id));
+    const list = targetRows.length > 0 ? targetRows : report.rows;
+    const header = "ชื่อ-นามสกุล\tคะแนน\tคะแนนเต็ม\tหมายเหตุ (จุดที่ถูกหักคะแนน)";
+    const lines = list.map((r) => {
+      const cleanComment = (r.deduction_summary || "ไม่ถูกหักคะแนน").replace(/[\r\n\t]+/g, " ");
+      return `${r.student_name}\t${r.final_score}\t${r.max_score}\t${cleanComment}`;
+    });
+    await handleCopyText(
+      [header, ...lines].join("\n"),
+      `คัดลอกตารางคะแนน ${list.length} คนแล้ว (กด Ctrl+V วางใน Google Sheets / Excel ได้ทันที)`
+    );
+  };
+
+  const toggleEnteredClassroom = (resultId: string) => {
+    setEnteredInClassroomIds((prev) =>
+      prev.includes(resultId) ? prev.filter((id) => id !== resultId) : [...prev, resultId]
+    );
   };
 
   const handleCopyBatchComments = async () => {
@@ -698,6 +735,24 @@ export default function ReportsPage() {
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                {report.summary.classroom_alternate_link && (
+                  <a
+                    href={report.summary.classroom_alternate_link}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex"
+                  >
+                    <Button size="sm" variant="outline">
+                      <ExternalLink className="h-3.5 w-3.5" /> เปิดหน้างานใน Classroom
+                    </Button>
+                  </a>
+                )}
+                <Button size="sm" variant="primary" onClick={() => setOpenQuickGradebook(true)}>
+                  <ListChecks className="h-3.5 w-3.5" /> โหมดลงคะแนนด่วน ({report.rows.length} คน)
+                </Button>
+                <Button size="sm" variant="outline" onClick={handleCopyScoreSheetTSV}>
+                  <ClipboardCopy className="h-3.5 w-3.5" /> คัดลอกตารางคะแนน (Sheets)
+                </Button>
                 <Button
                   size="sm"
                   variant="outline"
@@ -733,20 +788,25 @@ export default function ReportsPage() {
                 </Button>
               </div>
             </div>
-            <p className="text-[11px] text-slate-500">
-              หมายเหตุ: Google Classroom API รองรับการส่งคะแนนและคืนงานอัตโนมัติทีละหลายคน (สำหรับงานที่สร้างจากเมนู &ldquo;สร้างงานลง Classroom&rdquo;) แต่ยังไม่มี API สำหรับโพสต์ Private Comment แทนครูโดยตรง — ระบบจึงสร้างคอมเมนต์เฉพาะจุดที่หักคะแนนไว้ให้กดคัดลอกได้ทันทีทั้งรายคนและแบบกลุ่ม
+            <p className="text-[11px] text-slate-600">
+              💡 <strong>ข้อจำกัดของ Google Classroom API:</strong> งานที่โพสต์เองบนหน้า Google Classroom Google จะไม่อนุญาตให้แอปภายนอกเขียนคะแนนทับ — ให้กดปุ่ม <strong>&ldquo;โหมดลงคะแนนด่วน&rdquo;</strong> + <strong>&ldquo;เปิดหน้างานใน Classroom&rdquo;</strong> เพื่อคัดลอกคะแนน/คอมเมนต์วางทีละคนอย่างรวดเร็ว ส่วนงานครั้งถัดไปถ้าสร้างจากเมนู <strong>🚀 สร้างงานลง Classroom</strong> จะกดส่งคะแนนเข้าอัตโนมัติได้ 100% ค่ะ
             </p>
             {batchResult && (
-              <div className="rounded-xl border border-emerald-200 bg-white p-3 text-xs space-y-1.5">
+              <div className="rounded-xl border border-emerald-200 bg-white p-3 text-xs space-y-2">
                 <p className="font-semibold text-emerald-900">
                   สรุปการส่งแบบกลุ่ม: อนุมัติแล้ว {batchResult.confirmed_count}/{batchResult.total} คน •
                   ส่งเข้า Google Classroom สำเร็จ {batchResult.pushed_count} คน
                   {batchResult.failed_push_count > 0 && ` • ยังไม่ได้ส่งเข้า Classroom ${batchResult.failed_push_count} คน`}
                 </p>
                 {batchResult.failed_push_count > 0 && batchResult.items.find((i) => !i.pushed_to_classroom) && (
-                  <p className="text-amber-700">
-                    หมายเหตุ: {batchResult.items.find((i) => !i.pushed_to_classroom)?.classroom_message}
-                  </p>
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-amber-900">
+                    <p>
+                      <strong>หมายเหตุ:</strong> {batchResult.items.find((i) => !i.pushed_to_classroom)?.classroom_message}
+                    </p>
+                    <Button size="sm" variant="primary" onClick={() => setOpenQuickGradebook(true)}>
+                      <ListChecks className="h-3.5 w-3.5" /> เปิดโหมดลงคะแนนด่วนเลย
+                    </Button>
+                  </div>
                 )}
               </div>
             )}
@@ -844,6 +904,101 @@ export default function ReportsPage() {
           </Card>
         </>
       )}
+
+      {/* Quick Classroom Gradebook Helper Modal (for assignments created directly in Google Classroom) */}
+      <Modal
+        open={openQuickGradebook && Boolean(report)}
+        onClose={() => setOpenQuickGradebook(false)}
+        title={`⚡ โหมดลงคะแนนด่วนใน Google Classroom (${enteredInClassroomIds.length}/${report?.rows.length || 0} คน)`}
+        maxWidth="max-w-4xl"
+      >
+        {report && (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-emerald-200 bg-emerald-50/70 px-4 py-3 text-xs text-emerald-950">
+              <div>
+                <p className="font-bold">วิธีลงคะแนนให้เสร็จใน 30 วินาที (สำหรับงานที่โพสต์เองใน Classroom):</p>
+                <p className="text-emerald-800">
+                  1. กดเปิดหน้างานใน Classroom ไว้ข้างๆ • 2. กดปุ่มคัดลอกคะแนน/คอมเมนต์ทีละคนแล้ววาง • 3. ติ๊กช่อง &ldquo;กรอกแล้ว&rdquo; กันหลงลำดับ
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {report.summary.classroom_alternate_link && (
+                  <a href={report.summary.classroom_alternate_link} target="_blank" rel="noreferrer">
+                    <Button size="sm" variant="primary">
+                      <ExternalLink className="h-3.5 w-3.5" /> เปิดหน้างานใน Classroom
+                    </Button>
+                  </a>
+                )}
+                <Button size="sm" variant="outline" onClick={handleCopyScoreSheetTSV}>
+                  <ClipboardCopy className="h-3.5 w-3.5" /> คัดลอกทั้งตารางลง Sheets
+                </Button>
+              </div>
+            </div>
+
+            <div className="max-h-[60vh] overflow-y-auto divide-y divide-emerald-100 rounded-2xl border border-emerald-100">
+              {[...report.rows]
+                .sort((a, b) => a.student_name.localeCompare(b.student_name, "th"))
+                .map((r, idx) => {
+                  const done = enteredInClassroomIds.includes(r.result_id);
+                  return (
+                    <div
+                      key={r.result_id}
+                      className={`flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 text-sm transition ${
+                        done ? "bg-emerald-50/60 opacity-60" : "bg-white hover:bg-slate-50/60"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0 flex-1">
+                        <input
+                          type="checkbox"
+                          checked={done}
+                          onChange={() => toggleEnteredClassroom(r.result_id)}
+                          className="h-4 w-4 rounded accent-emerald-600 cursor-pointer"
+                          title="ติ๊กว่ากรอกลง Classroom แล้ว"
+                        />
+                        <span className="text-xs font-bold text-slate-400 w-6">{idx + 1}.</span>
+                        <div className="min-w-0 flex-1">
+                          <p className={`font-bold text-[#172B1C] truncate ${done ? "line-through" : ""}`}>
+                            {r.student_name}
+                          </p>
+                          <p className="text-[11px] text-slate-500 truncate">
+                            {r.deduction_summary || "ไม่ถูกหักคะแนน"}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="rounded-full bg-emerald-100 px-3 py-1 text-sm font-extrabold text-emerald-900">
+                          {r.final_score} / {r.max_score}
+                        </span>
+                        <Button
+                          size="sm"
+                          variant="mint"
+                          onClick={() => {
+                            void handleCopyText(String(r.final_score), `คัดลอกคะแนน ${r.final_score} ของ ${r.student_name} แล้ว`);
+                          }}
+                        >
+                          <ClipboardCopy className="h-3.5 w-3.5" /> คะแนน
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            void handleCopyText(
+                              r.deduction_comment || r.deduction_summary || "ไม่ถูกหักคะแนน",
+                              `คัดลอกคอมเมนต์ของ ${r.student_name} แล้ว`
+                            );
+                            if (!done) toggleEnteredClassroom(r.result_id);
+                          }}
+                        >
+                          <ClipboardCopy className="h-3.5 w-3.5" /> คอมเมนต์
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+        )}
+      </Modal>
 
       {/* Individual Student Grading Report Modal (Side-by-Side Live Excel Preview + Score Breakdown) */}
       <Modal

@@ -8,7 +8,16 @@ from sqlalchemy.orm import Session
 
 from backend.app.api.deps import get_current_teacher
 from backend.app.core.database import get_db
-from backend.app.models.models import Assignment, GradingDetail, GradingResult, RubricVersion, Student, Submission, User
+from backend.app.models.models import (
+    Assignment,
+    ClassroomAssignment,
+    GradingDetail,
+    GradingResult,
+    RubricVersion,
+    Student,
+    Submission,
+    User,
+)
 from backend.app.services.export_service import (
     generate_class_report_csv,
     generate_class_report_excel,
@@ -183,9 +192,24 @@ def _build_class_report_data(
                 last_rubric_name = str(snap.get("name") or "")
                 break
 
+    classroom_link: str | None = None
+    ca_obj = (
+        db.query(ClassroomAssignment).filter(ClassroomAssignment.id == assignment.classroom_assignment_id).first()
+        if assignment.classroom_assignment_id
+        else db.query(ClassroomAssignment)
+        .filter(
+            ClassroomAssignment.local_assignment_id == assignment.id,
+            ClassroomAssignment.owner_user_id == owner_user_id,
+        )
+        .first()
+    )
+    if ca_obj and ca_obj.alternate_link:
+        classroom_link = ca_obj.alternate_link
+
     summary = {
         "assignment_id": assignment.id,
         "assignment_title": assignment.title,
+        "classroom_alternate_link": classroom_link,
         "last_rubric_id": last_rubric_id,
         "last_rubric_name": last_rubric_name,
         "last_rubric_version": last_rubric_version,
