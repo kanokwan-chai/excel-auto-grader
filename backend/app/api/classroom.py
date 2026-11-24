@@ -766,7 +766,7 @@ async def run_classroom_wizard_grading(
         except Exception:
             ref_path = None
 
-    # Download all student Excel files in this batch concurrently from Google Drive (~6x faster!)
+    # Download student Excel files in this batch concurrently with bounded concurrency (keeps RAM low on Render 512MB)
     download_targets: list[tuple[str, str | None]] = []
     for cs in c_subs:
         if not cs.selected_drive_file_id:
@@ -776,18 +776,25 @@ async def run_classroom_wizard_grading(
             None,
         )
         download_targets.append((cs.selected_drive_file_id, chosen_att.get("mime_type") if chosen_att else None))
-    downloaded_map = await download_drive_files_batch(db, conn, download_targets, concurrency=6)
+    downloaded_map = await download_drive_files_batch(db, conn, download_targets, concurrency=3)
+
+    job_id_str = job.id
+    local_assign_id_str = local_assignment.id
+    rubric_ver_id_str = rubric_ver.id
+    c_sub_ids = [cs.id for cs in c_subs]
 
     graded_results = []
     failed = 0
-    for cs in c_subs:
-        if not cs.selected_drive_file_id:
+    for csid in c_sub_ids:
+        cs = db.query(ClassroomSubmission).filter(ClassroomSubmission.id == csid).first()
+        if not cs or not cs.selected_drive_file_id:
             continue
         chosen_att = next(
             (a for a in (cs.attachments or []) if a.get("drive_file_id") == cs.selected_drive_file_id),
             None,
         )
-        dl_res = downloaded_map.get(cs.selected_drive_file_id)
+        # Pop immediately to release raw file bytes from RAM as soon as saved to disk
+        dl_res = downloaded_map.pop(cs.selected_drive_file_id, None)
         if not dl_res or isinstance(dl_res, Exception):
             failed += 1
             continue
@@ -797,12 +804,15 @@ async def run_classroom_wizard_grading(
         if not filename.lower().endswith((".xlsx", ".xls", ".xlsm")):
             filename += ".xlsx"
 
+        file_len = len(content)
+        file_sha = hashlib.sha256(content).hexdigest()
         storage_path = storage_service.save_bytes(
             user_id=current_teacher.id,
             folder="submissions",
             filename=filename,
             content=content,
         )
+        del content
 
         local_sub = (
             db.query(Submission).filter(Submission.id == cs.local_submission_id).first()
@@ -812,7 +822,7 @@ async def run_classroom_wizard_grading(
         if not local_sub:
             local_sub = Submission(
                 owner_user_id=current_teacher.id,
-                assignment_id=local_assignment.id,
+                assignment_id=local_assign_id_str,
                 source="google_classroom",
                 student_display_name=cs.student_name,
                 submission_status="turned_in",
@@ -831,8 +841,8 @@ async def run_classroom_wizard_grading(
             original_filename=filename,
             storage_path=storage_path,
             file_extension=os.path.splitext(filename)[1].lower() or ".xlsx",
-            file_size_bytes=len(content),
-            sha256_hash=hashlib.sha256(content).hexdigest(),
+            file_size_bytes=file_len,
+            sha256_hash=file_sha,
             google_drive_file_id=cs.selected_drive_file_id,
             is_primary=True,
         )
@@ -840,17 +850,24 @@ async def run_classroom_wizard_grading(
         db.flush()
 
         try:
+            from backend.app.models.models import RubricVersion
+            assign_live = db.query(Assignment).filter(Assignment.id == local_assign_id_str).first()
+            rv_live = db.query(RubricVersion).filter(RubricVersion.id == rubric_ver_id_str).first()
+            job_live = db.query(GradingJob).filter(GradingJob.id == job_id_str).first()
+            if not assign_live or not rv_live:
+                failed += 1
+                continue
             res = grade_single_submission(
                 db,
                 owner_user_id=current_teacher.id,
-                assignment=local_assignment,
+                assignment=assign_live,
                 submission=local_sub,
-                rubric_version=rubric_ver,
-                grading_job=job,
+                rubric_version=rv_live,
+                grading_job=job_live,
                 force_regrade_confirmed=True,
                 preloaded_ref_path=ref_path,
                 has_preloaded_ref=True,
-                run_gc=False,
+                run_gc=True,
             )
             graded_results.append(res.id)
             if res.status == "error":
@@ -858,19 +875,25 @@ async def run_classroom_wizard_grading(
         except Exception:
             failed += 1
             db.rollback()
+            gc.collect()
 
+    downloaded_map.clear()
     gc.collect()
 
-    job.processed_files = int(job.processed_files or 0) + len(graded_results)
-    job.failed_files = int(job.failed_files or 0) + failed
-    job.status = "completed" if int(job.failed_files or 0) == 0 else "partial_failed"
-    job.completed_at = datetime.now(timezone.utc)
-    local_assignment.status = "completed"
+    job_final = db.query(GradingJob).filter(GradingJob.id == job_id_str).first()
+    assign_final = db.query(Assignment).filter(Assignment.id == local_assign_id_str).first()
+    if job_final:
+        job_final.processed_files = int(job_final.processed_files or 0) + len(graded_results)
+        job_final.failed_files = int(job_final.failed_files or 0) + failed
+        job_final.status = "completed" if int(job_final.failed_files or 0) == 0 else "partial_failed"
+        job_final.completed_at = datetime.now(timezone.utc)
+    if assign_final:
+        assign_final.status = "completed"
     db.commit()
 
     return {
-        "job_id": job.id,
-        "assignment_id": local_assignment.id,
+        "job_id": job_id_str,
+        "assignment_id": local_assign_id_str,
         "graded_count": len(graded_results),
         "failed_count": failed,
         "result_ids": graded_results,

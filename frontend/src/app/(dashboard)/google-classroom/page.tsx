@@ -208,11 +208,29 @@ export default function GoogleClassroomWizardPage() {
     setLoading(true);
     setError(null);
     setBatchProgress(null);
-    const BATCH_SIZE = 8;
+    const BATCH_SIZE = 3;
     let totalGraded = 0;
     let totalFailed = 0;
     let lastJobId = "";
     let lastAssignId = "";
+
+    const gradeChunk = async (chunkIds: string[]) =>
+      apiRequest<{
+        job_id: string;
+        assignment_id: string;
+        graded_count: number;
+        failed_count: number;
+      }>("/classroom/wizard/grade", {
+        method: "POST",
+        body: JSON.stringify({
+          google_connection_id: selectedAccountId,
+          google_classroom_id: selectedCourse.id,
+          classroom_assignment_id: selectedAssignment.id,
+          rubric_id: selectedRubricId,
+          classroom_submission_ids: chunkIds,
+          job_id: lastJobId || undefined,
+        }),
+      });
 
     try {
       const totalBatches = Math.ceil(targetIds.length / BATCH_SIZE);
@@ -222,26 +240,29 @@ export default function GoogleClassroomWizardPage() {
         setBatchProgress(
           `กำลังดาวน์โหลดและตรวจชุดที่ ${batchNum}/${totalBatches} (เสร็จแล้ว ${totalGraded}/${targetIds.length} คน)...`
         );
-        const res = await apiRequest<{
-          job_id: string;
-          assignment_id: string;
-          graded_count: number;
-          failed_count: number;
-        }>("/classroom/wizard/grade", {
-          method: "POST",
-          body: JSON.stringify({
-            google_connection_id: selectedAccountId,
-            google_classroom_id: selectedCourse.id,
-            classroom_assignment_id: selectedAssignment.id,
-            rubric_id: selectedRubricId,
-            classroom_submission_ids: chunk,
-            job_id: lastJobId || undefined,
-          }),
-        });
-        totalGraded += res.graded_count;
-        totalFailed += res.failed_count;
-        lastJobId = res.job_id;
-        lastAssignId = res.assignment_id;
+        try {
+          const res = await gradeChunk(chunk);
+          totalGraded += res.graded_count;
+          totalFailed += res.failed_count;
+          lastJobId = res.job_id;
+          lastAssignId = res.assignment_id;
+        } catch {
+          // If a 3-student batch hits memory/timeout (e.g. 1 oversized file), automatically retry 1-by-1
+          for (const singleId of chunk) {
+            setBatchProgress(
+              `กำลังตรวจแยกทีละไฟล์เพื่อป้องกันไฟล์ใหญ่ค้าง (เสร็จแล้ว ${totalGraded}/${targetIds.length} คน)...`
+            );
+            try {
+              const singleRes = await gradeChunk([singleId]);
+              totalGraded += singleRes.graded_count;
+              totalFailed += singleRes.failed_count;
+              lastJobId = singleRes.job_id;
+              lastAssignId = singleRes.assignment_id;
+            } catch {
+              totalFailed += 1;
+            }
+          }
+        }
       }
       setGradingResult({
         job_id: lastJobId,
@@ -249,7 +270,11 @@ export default function GoogleClassroomWizardPage() {
         graded_count: totalGraded,
         failed_count: totalFailed,
       });
-      toast(`ตรวจงานเสร็จสิ้น ${totalGraded} ไฟล์`);
+      toast(
+        totalFailed > 0
+          ? `ตรวจงานเสร็จสิ้น ${totalGraded} ไฟล์ (มีไฟล์เปิดไม่ได้/ใหญ่เกิน ${totalFailed} ไฟล์)`
+          : `ตรวจงานเสร็จสิ้น ${totalGraded} ไฟล์`
+      );
       setStep(8);
     } catch (err) {
       setError(

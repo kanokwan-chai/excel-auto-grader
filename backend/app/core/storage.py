@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import os
 import re
-import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
 
@@ -23,6 +23,7 @@ from backend.app.core.config import get_settings
 StorageFolder = Literal["references", "submissions", "reports", "exports", "avatars"]
 
 settings = get_settings()
+_BG_UPLOAD_POOL = ThreadPoolExecutor(max_workers=2)
 
 
 def sanitize_filename(filename: str) -> str:
@@ -79,17 +80,14 @@ class StorageService:
                 "x-upsert": "true",
             }
 
-            def _bg_upload(url: str, hdrs: dict[str, str], data: bytes) -> None:
+            def _bg_upload(url: str, hdrs: dict[str, str], file_path: Path) -> None:
                 try:
-                    httpx.post(url, headers=hdrs, content=data, timeout=30.0)
+                    if file_path.exists():
+                        httpx.post(url, headers=hdrs, content=file_path.read_bytes(), timeout=30.0)
                 except Exception:
                     pass
 
-            threading.Thread(
-                target=_bg_upload,
-                args=(upload_url, headers, content),
-                daemon=True,
-            ).start()
+            _BG_UPLOAD_POOL.submit(_bg_upload, upload_url, headers, local_target)
 
         return rel_path
 
