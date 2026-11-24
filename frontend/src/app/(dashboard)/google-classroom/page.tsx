@@ -235,6 +235,7 @@ export default function GoogleClassroomWizardPage() {
             classroom_assignment_id: selectedAssignment.id,
             rubric_id: selectedRubricId,
             classroom_submission_ids: chunk,
+            job_id: lastJobId || undefined,
           }),
         });
         totalGraded += res.graded_count;

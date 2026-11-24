@@ -711,15 +711,28 @@ async def run_classroom_wizard_grading(
         sub_q = sub_q.filter(ClassroomSubmission.id.in_(payload.classroom_submission_ids))
     c_subs = sub_q.all()
 
-    job = GradingJob(
-        owner_user_id=current_teacher.id,
-        assignment_id=local_assignment.id,
-        rubric_version_id=rubric_ver.id,
-        status="processing",
-        total_files=len(c_subs),
-        started_at=datetime.now(timezone.utc),
+    job = (
+        db.query(GradingJob)
+        .filter(GradingJob.id == payload.job_id, GradingJob.owner_user_id == current_teacher.id)
+        .first()
+        if payload.job_id
+        else None
     )
-    db.add(job)
+    if job:
+        job.total_files = int(job.total_files or 0) + len(c_subs)
+        job.status = "processing"
+    else:
+        job = GradingJob(
+            owner_user_id=current_teacher.id,
+            assignment_id=local_assignment.id,
+            rubric_version_id=rubric_ver.id,
+            status="processing",
+            total_files=len(c_subs),
+            processed_files=0,
+            failed_files=0,
+            started_at=datetime.now(timezone.utc),
+        )
+        db.add(job)
     db.flush()
 
     graded_results = []
@@ -804,9 +817,9 @@ async def run_classroom_wizard_grading(
             failed += 1
             db.rollback()
 
-    job.processed_files = len(graded_results)
-    job.failed_files = failed
-    job.status = "completed" if failed == 0 else "partial_failed"
+    job.processed_files = int(job.processed_files or 0) + len(graded_results)
+    job.failed_files = int(job.failed_files or 0) + failed
+    job.status = "completed" if int(job.failed_files or 0) == 0 else "partial_failed"
     job.completed_at = datetime.now(timezone.utc)
     local_assignment.status = "completed"
     db.commit()

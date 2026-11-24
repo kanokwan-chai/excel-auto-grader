@@ -80,15 +80,28 @@ async def run_grading_job(
         sub_q = sub_q.filter(Submission.id.in_(payload.submission_ids))
     submissions = sub_q.all()
 
-    job = GradingJob(
-        owner_user_id=current_teacher.id,
-        assignment_id=assignment.id,
-        rubric_version_id=rubric_ver.id,
-        status="processing",
-        total_files=len(submissions),
-        started_at=datetime.now(timezone.utc),
+    job = (
+        db.query(GradingJob)
+        .filter(GradingJob.id == payload.job_id, GradingJob.owner_user_id == current_teacher.id)
+        .first()
+        if payload.job_id
+        else None
     )
-    db.add(job)
+    if job:
+        job.total_files = int(job.total_files or 0) + len(submissions)
+        job.status = "processing"
+    else:
+        job = GradingJob(
+            owner_user_id=current_teacher.id,
+            assignment_id=assignment.id,
+            rubric_version_id=rubric_ver.id,
+            status="processing",
+            total_files=len(submissions),
+            processed_files=0,
+            failed_files=0,
+            started_at=datetime.now(timezone.utc),
+        )
+        db.add(job)
     db.flush()
 
     processed = 0
@@ -146,9 +159,11 @@ async def run_grading_job(
             failed += 1
             db.rollback()
 
-    job.processed_files = processed
-    job.failed_files = failed
-    job.status = "completed" if failed == 0 else ("partial_failed" if processed > failed else "failed")
+    job.processed_files = int(job.processed_files or 0) + processed
+    job.failed_files = int(job.failed_files or 0) + failed
+    tot_f = int(job.failed_files or 0)
+    tot_p = int(job.processed_files or 0)
+    job.status = "completed" if tot_f == 0 else ("partial_failed" if tot_p > tot_f else "failed")
     job.completed_at = datetime.now(timezone.utc)
     assignment.status = "completed"
     db.commit()
@@ -737,15 +752,53 @@ def get_grading_history(
     current_teacher: User = Depends(get_current_teacher),
     db: Session = Depends(get_db),
 ):
-    """Full audit trail of grading jobs and manual grade adjustments for this teacher."""
+    """Full audit trail of grading jobs (merging consecutive split-chunks into 1 unified run) and adjustments."""
     jobs = (
         db.query(GradingJob, Assignment)
         .join(Assignment, GradingJob.assignment_id == Assignment.id)
         .filter(GradingJob.owner_user_id == current_teacher.id)
         .order_by(GradingJob.created_at.desc())
-        .limit(50)
+        .limit(120)
         .all()
     )
+
+    merged_jobs: list[dict] = []
+    for j, a in jobs:
+        j_ts = j.completed_at or j.started_at or j.created_at
+        if merged_jobs:
+            prev = merged_jobs[-1]
+            prev_ts = prev["_last_ts"]
+            same_assign = prev["assignment_id"] == a.id
+            close_in_time = (
+                j_ts is not None
+                and prev_ts is not None
+                and abs((prev_ts - j_ts).total_seconds()) <= 300
+            )
+            if same_assign and close_in_time:
+                prev["total_files"] += int(j.total_files or 0)
+                prev["processed_files"] += int(j.processed_files or 0)
+                prev["failed_files"] += int(j.failed_files or 0)
+                if j.failed_files:
+                    prev["status"] = "partial_failed"
+                prev["_last_ts"] = j_ts
+                continue
+
+        merged_jobs.append({
+            "id": j.id,
+            "assignment_id": a.id,
+            "assignment_title": a.title,
+            "status": j.status,
+            "total_files": int(j.total_files or 0),
+            "processed_files": int(j.processed_files or 0),
+            "failed_files": int(j.failed_files or 0),
+            "started_at": j.started_at.isoformat() if j.started_at else None,
+            "completed_at": j.completed_at.isoformat() if j.completed_at else None,
+            "_last_ts": j_ts,
+        })
+
+    for mj in merged_jobs:
+        mj.pop("_last_ts", None)
+
     adjustments = (
         db.query(GradeAdjustment, GradingResult, Submission, Assignment)
         .join(GradingResult, GradeAdjustment.grading_result_id == GradingResult.id)
@@ -758,20 +811,7 @@ def get_grading_history(
     )
 
     return {
-        "jobs": [
-            {
-                "id": j.id,
-                "assignment_id": a.id,
-                "assignment_title": a.title,
-                "status": j.status,
-                "total_files": j.total_files,
-                "processed_files": j.processed_files,
-                "failed_files": j.failed_files,
-                "started_at": j.started_at.isoformat() if j.started_at else None,
-                "completed_at": j.completed_at.isoformat() if j.completed_at else None,
-            }
-            for j, a in jobs
-        ],
+        "jobs": merged_jobs[:50],
         "adjustments": [
             {
                 "id": adj.id,

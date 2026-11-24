@@ -153,20 +153,25 @@ export default function ReportsPage() {
     try {
       if (subIds.length > 0) {
         const totalBatches = Math.ceil(subIds.length / BATCH_SIZE);
+        let sharedJobId: string | undefined = undefined;
         for (let i = 0; i < subIds.length; i += BATCH_SIZE) {
           const chunk = subIds.slice(i, i + BATCH_SIZE);
           const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-          setRegradeProgress(`กำลังรีการตรวจชุดที่ ${batchNum}/${totalBatches} (เสร็จแล้ว ${done}/${subIds.length} คน)...`);
-          const res = await apiRequest<{ processed_files: number }>("/grading/run", {
+          setRegradeProgress(`กำลังรีการตรวจ (${done}/${subIds.length} คน)...`);
+          const res: { job_id?: string; processed_files: number } = await apiRequest("/grading/run", {
             method: "POST",
             body: JSON.stringify({
               assignment_id: assignmentId,
               rubric_id: regradeRubricId,
               submission_ids: chunk,
               force_regrade_confirmed: overwriteConfirmed,
+              job_id: sharedJobId,
             }),
           });
+          if (res.job_id) sharedJobId = res.job_id;
           done += res.processed_files;
+          void batchNum;
+          void totalBatches;
         }
       } else {
         setRegradeProgress("กำลังรีการตรวจทั้งห้อง...");
