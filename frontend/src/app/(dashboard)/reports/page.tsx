@@ -91,8 +91,11 @@ export default function ReportsPage() {
   const [regradeRubricId, setRegradeRubricId] = useState("");
   const lastSyncedAssignmentRef = useRef<string>("");
   const pinnedRubricFromUrlRef = useRef<string | null>(null);
+  const autoRegradePendingRef = useRef<boolean>(false);
   const [regrading, setRegrading] = useState(false);
   const [regradeProgress, setRegradeProgress] = useState<string | null>(null);
+  const [regradeError, setRegradeError] = useState<string | null>(null);
+  const [regradingSingle, setRegradingSingle] = useState(false);
   const [overwriteConfirmed, setOverwriteConfirmed] = useState(true);
 
   const [detail, setDetail] = useState<GradingResultDetail | null>(null);
@@ -123,6 +126,9 @@ export default function ReportsPage() {
     const urlAssignId = sp?.get("assignment_id") || null;
     if (urlRubricId) {
       pinnedRubricFromUrlRef.current = urlRubricId;
+    }
+    if (sp?.get("auto_regrade") === "1" && urlRubricId && urlAssignId) {
+      autoRegradePendingRef.current = true;
     }
     Promise.all([
       apiRequest<AssignmentItem[]>("/assignments"),
@@ -168,7 +174,8 @@ export default function ReportsPage() {
 
     setRegrading(true);
     setRegradeProgress(null);
-    const BATCH_SIZE = 10;
+    setRegradeError(null);
+    const BATCH_SIZE = 5;
     let done = 0;
     let totalFailed = 0;
     let lastErrorSample = "";
@@ -235,10 +242,9 @@ export default function ReportsPage() {
         }
       }
       if (totalFailed > 0) {
-        toast(
-          `รีการตรวจมีข้อผิดพลาด ${totalFailed}/${done} คน${lastErrorSample ? ` (${lastErrorSample})` : ""}`,
-          "error"
-        );
+        const msg = `รีการตรวจมีข้อผิดพลาด ${totalFailed}/${done} คน${lastErrorSample ? ` (${lastErrorSample})` : ""}`;
+        setRegradeError(msg);
+        toast(msg, "error");
       } else {
         toast(
           `รีการตรวจเสร็จแล้ว (${done} คน) ด้วยเกณฑ์ "${usedRubricName || "ล่าสุด"}" v${usedRubricVer || ""} ✨`
@@ -246,10 +252,46 @@ export default function ReportsPage() {
       }
       await loadReport();
     } catch (err) {
-      toast(err instanceof Error ? err.message : "รีการตรวจไม่สำเร็จ", "error");
+      const msg = err instanceof Error ? err.message : "รีการตรวจไม่สำเร็จ";
+      setRegradeError(msg);
+      toast(msg, "error");
     } finally {
       setRegrading(false);
       setRegradeProgress(null);
+    }
+  };
+
+  const handleRegradeSingleFromModal = async () => {
+    if (!detail || !assignmentId || !regradeRubricId) return;
+    setRegradingSingle(true);
+    try {
+      const res = await apiRequest<{
+        result_ids?: string[];
+        failed_files?: number;
+        error_samples?: string[];
+        rubric_name?: string;
+        rubric_version?: number;
+      }>("/grading/run", {
+        method: "POST",
+        body: JSON.stringify({
+          assignment_id: assignmentId,
+          rubric_id: regradeRubricId,
+          submission_ids: [detail.submission_id],
+          force_regrade_confirmed: true,
+        }),
+      });
+      if (res.failed_files && res.failed_files > 0) {
+        toast(`รีตรวจไม่สำเร็จ: ${res.error_samples?.[0] || "เกิดข้อผิดพลาด"}`, "error");
+      } else {
+        toast(`รีตรวจ ${detail.student_name} ด้วย "${res.rubric_name || "เกณฑ์ล่าสุด"}" v${res.rubric_version || ""} แล้ว ✨`);
+        const newId = res.result_ids?.[0];
+        await loadReport();
+        if (newId) await openStudentDetail(newId);
+      }
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "รีตรวจไม่สำเร็จ", "error");
+    } finally {
+      setRegradingSingle(false);
     }
   };
 
@@ -352,6 +394,13 @@ export default function ReportsPage() {
   useEffect(() => {
     if (assignmentId) loadReport();
   }, [assignmentId, sortBy, statusFilter]);
+
+  useEffect(() => {
+    if (autoRegradePendingRef.current && report && report.rows.length > 0 && regradeRubricId && !regrading) {
+      autoRegradePendingRef.current = false;
+      void handleQuickRegrade(false);
+    }
+  }, [report, regradeRubricId]);
 
   const openStudentDetail = async (resultId: string) => {
     setExcelPreview(null);
@@ -589,15 +638,46 @@ export default function ReportsPage() {
             {(() => {
               const picked = rubrics.find((r) => r.id === regradeRubricId);
               if (!picked) return null;
+              const isStale =
+                report.summary.last_rubric_id !== picked.id ||
+                (report.summary.last_rubric_version || 0) < picked.current_version;
               return (
-                <div className="rounded-xl border border-sky-200/80 bg-white/90 px-3 py-2 text-[11px] text-slate-700">
-                  <span className="font-bold text-sky-900">
-                    🎯 ข้อเกณฑ์ที่จะใช้ตรวจรอบนี้ ({picked.name} v{picked.current_version} • {picked.items.length} ข้อ):
-                  </span>{" "}
-                  {picked.items.map((it, idx) => `${idx + 1}. ${it.title}${it.sheet_name ? ` [${it.sheet_name}]` : ""}`).join(" • ")}
-                </div>
+                <>
+                  <div className="rounded-xl border border-sky-200/80 bg-white/90 px-3 py-2 text-[11px] text-slate-700">
+                    <span className="font-bold text-sky-900">
+                      🎯 ข้อเกณฑ์ที่จะใช้ตรวจรอบนี้ ({picked.name} v{picked.current_version} • {picked.items.length} ข้อ):
+                    </span>{" "}
+                    {picked.items.map((it, idx) => `${idx + 1}. ${it.title}${it.sheet_name ? ` [${it.sheet_name}]` : ""}`).join(" • ")}
+                  </div>
+                  {isStale && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border-2 border-amber-300 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-950">
+                      <div>
+                        <strong>⚠️ ผลคะแนนในตารางด้านล่างยังเป็นของเกณฑ์เก่า</strong>
+                        {report.summary.last_rubric_name && (
+                          <span>
+                            {" "}({report.summary.last_rubric_name} v{report.summary.last_rubric_version || 1})
+                          </span>
+                        )}
+                        {" "}ยังไม่ได้รีตรวจด้วย <strong>{picked.name} (v{picked.current_version})</strong>!
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        loading={regrading}
+                        onClick={() => handleQuickRegrade(false)}
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" /> รีการตรวจทั้งห้องด้วยเกณฑ์ใหม่ตอนนี้เลย
+                      </Button>
+                    </div>
+                  )}
+                </>
               );
             })()}
+            {regradeError && (
+              <div className="rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-800">
+                ❌ {regradeError}
+              </div>
+            )}
             {regradeProgress && (
               <div className="rounded-xl border border-sky-200 bg-white px-3 py-2 text-xs font-semibold text-sky-900 animate-pulse">
                 ⏳ {regradeProgress}
@@ -782,16 +862,27 @@ export default function ReportsPage() {
               <div>
                 <p className="text-sm font-bold text-violet-950">{detail.assignment_title}</p>
                 <p className="text-xs text-slate-600">
-                  รหัส: {detail.student_code} • เกณฑ์เวอร์ชัน {detail.rubric_version}
+                  รหัส: {detail.student_code} • ตรวจด้วยเกณฑ์:{" "}
+                  <strong>{detail.rubric_name || "ไม่ระบุ"}</strong> (v{detail.rubric_version})
                 </p>
               </div>
-              <div className="flex items-center gap-3">
-                <div className="text-right">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="text-right mr-1">
                   <p className="text-2xl font-bold text-violet-900">
                     {detail.final_score} / {detail.max_score}
                   </p>
                   <p className="text-xs text-slate-500">{detail.percentage}%</p>
                 </div>
+                {regradeRubricId && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    loading={regradingSingle}
+                    onClick={handleRegradeSingleFromModal}
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" /> รีตรวจคนนี้ใหม่
+                  </Button>
+                )}
                 <Button size="sm" variant="outline" onClick={() => downloadFileFromApi(`/reports/results/${detail.id}/export/pdf`, `report_${detail.student_code}.pdf`)}>
                   <FileDown className="h-3.5 w-3.5" /> PDF
                 </Button>

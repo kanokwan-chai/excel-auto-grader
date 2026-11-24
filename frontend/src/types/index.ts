@@ -223,6 +223,7 @@ export interface GradingResultSummary {
 
 export interface GradingResultDetail extends GradingResultSummary {
   rubric_version: number;
+  rubric_name?: string | null;
   teacher_comment?: string | null;
   recalculated_with_libreoffice: boolean;
   details: {

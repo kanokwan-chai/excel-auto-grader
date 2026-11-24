@@ -296,6 +296,7 @@ def get_grading_result_detail(
         "student_name": submission.student_display_name if submission else "-",
         "student_code": submission.student_code_matched if submission else "-",
         "rubric_version": rubric_ver.version_number if rubric_ver else 1,
+        "rubric_name": ((rubric_ver.snapshot_json or {}).get("name") if rubric_ver else None),
         "auto_score": gr.auto_score,
         "final_score": gr.final_score,
         "max_score": gr.max_score,

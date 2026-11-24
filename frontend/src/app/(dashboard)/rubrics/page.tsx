@@ -656,7 +656,11 @@ export default function RubricsPage() {
 
               <div className="flex flex-wrap justify-end gap-2 pt-2 border-t border-[#EAF5E7]">
                 <Link
-                  href={`/reports?rubric_id=${encodeURIComponent(r.id)}${r.assignment_id ? `&assignment_id=${encodeURIComponent(r.assignment_id)}` : ""}`}
+                  href={`/reports?rubric_id=${encodeURIComponent(r.id)}${
+                    r.assignment_id
+                      ? `&assignment_id=${encodeURIComponent(r.assignment_id)}&auto_regrade=1`
+                      : ""
+                  }`}
                 >
                   <Button size="sm" variant="mint">
                     <RefreshCw className="h-3.5 w-3.5" /> รีตรวจด้วยเกณฑ์นี้

@@ -50,6 +50,30 @@ def _build_class_report_data(
         .all()
     )
 
+    # Deduplicate by student so an older duplicate submission/result never lingers alongside a newer re-grade
+    results_sorted_newest = sorted(
+        results,
+        key=lambda item: item[0].graded_at.timestamp() if item[0].graded_at else 0.0,
+        reverse=True,
+    )
+    seen_student_keys: set[str] = set()
+    deduped_results = []
+    for gr, sub, st in results_sorted_newest:
+        s_key = (
+            f"st:{st.id}"
+            if st
+            else (
+                f"gs:{sub.google_submission_id}"
+                if sub.google_submission_id
+                else f"nm:{(sub.student_display_name or sub.id).strip().lower()}"
+            )
+        )
+        if s_key in seen_student_keys:
+            continue
+        seen_student_keys.add(s_key)
+        deduped_results.append((gr, sub, st))
+    results = deduped_results
+
     rows = []
     for idx, (gr, sub, st) in enumerate(results, start=1):
         name = f"{st.first_name} {st.last_name}" if st else (sub.student_display_name or "ไม่ระบุชื่อ")
