@@ -65,6 +65,7 @@ export async function apiRequest<T>(
   for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
     try {
       res = await fetch(`${API_BASE_URL}${path}`, {
+        cache: "no-store",
         ...options,
         headers,
       });

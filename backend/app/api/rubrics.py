@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from backend.app.api.deps import get_current_teacher
 from backend.app.core.config import get_settings
@@ -107,9 +107,13 @@ def list_rubrics(
     current_teacher: User = Depends(get_current_teacher),
     db: Session = Depends(get_db),
 ):
-    q = db.query(GradingRubric).filter(
-        GradingRubric.owner_user_id == current_teacher.id,
-        GradingRubric.deleted_at.is_(None),
+    q = (
+        db.query(GradingRubric)
+        .options(selectinload(GradingRubric.items))
+        .filter(
+            GradingRubric.owner_user_id == current_teacher.id,
+            GradingRubric.deleted_at.is_(None),
+        )
     )
     if assignment_id:
         q = q.filter(GradingRubric.assignment_id == assignment_id)
@@ -215,7 +219,7 @@ def update_rubric(
         rubric.name = payload.name.strip()
     if payload.description is not None:
         rubric.description = payload.description
-    if payload.assignment_id is not None:
+    if "assignment_id" in payload.model_fields_set:
         rubric.assignment_id = payload.assignment_id
     if payload.total_points is not None:
         rubric.total_points = payload.total_points
@@ -225,30 +229,32 @@ def update_rubric(
         rubric.enabled_categories = payload.enabled_categories
 
     if payload.items is not None:
-        db.query(RubricItem).filter(RubricItem.rubric_id == rubric.id).delete()
+        db.query(RubricItem).filter(RubricItem.rubric_id == rubric.id).delete(synchronize_session=False)
         db.flush()
-        for idx, item in enumerate(payload.items):
-            db.add(
-                RubricItem(
-                    owner_user_id=current_teacher.id,
-                    rubric_id=rubric.id,
-                    order_index=item.order_index or idx,
-                    title=item.title.strip(),
-                    description=item.description,
-                    category=item.category,
-                    sheet_name=item.sheet_name,
-                    target_cell=item.target_cell,
-                    rule_config=item.rule_config,
-                    max_points=item.max_points,
-                    min_points=item.min_points,
-                    allow_partial_credit=item.allow_partial_credit,
-                    weight_importance=item.weight_importance,
-                    zero_on_error=item.zero_on_error,
-                    is_enabled=item.is_enabled,
-                )
+        new_items = [
+            RubricItem(
+                owner_user_id=current_teacher.id,
+                rubric_id=rubric.id,
+                order_index=idx,
+                title=item.title.strip(),
+                description=item.description,
+                category=item.category,
+                sheet_name=item.sheet_name,
+                target_cell=item.target_cell,
+                rule_config=item.rule_config,
+                max_points=item.max_points,
+                min_points=item.min_points,
+                allow_partial_credit=item.allow_partial_credit,
+                weight_importance=item.weight_importance,
+                zero_on_error=item.zero_on_error,
+                is_enabled=item.is_enabled,
             )
+            for idx, item in enumerate(payload.items)
+        ]
+        db.add_all(new_items)
 
     rubric.current_version += 1
+    rubric.updated_at = datetime.now(timezone.utc)
     db.flush()
     db.expire(rubric, ["items"])
     db.refresh(rubric)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -17,6 +18,7 @@ from backend.app.models.models import (
     GradingJob,
     GradingResult,
     GradingRubric,
+    ReferenceFile,
     RubricVersion,
     Submission,
     SubmissionFile,
@@ -104,6 +106,18 @@ async def run_grading_job(
         db.add(job)
     db.flush()
 
+    ref_file = (
+        db.query(ReferenceFile)
+        .filter(
+            ReferenceFile.owner_user_id == current_teacher.id,
+            ReferenceFile.assignment_id == assignment.id,
+            ReferenceFile.is_active.is_(True),
+        )
+        .order_by(ReferenceFile.created_at.desc())
+        .first()
+    )
+    ref_path = storage_service.get_local_path(ref_file.storage_path, current_teacher.id) if ref_file else None
+
     processed = 0
     failed = 0
     result_ids: list[str] = []
@@ -149,6 +163,9 @@ async def run_grading_job(
                 rubric_version=rubric_ver,
                 grading_job=job,
                 force_regrade_confirmed=payload.force_regrade_confirmed,
+                preloaded_ref_path=ref_path,
+                has_preloaded_ref=True,
+                run_gc=False,
             )
             processed += 1
             if res.status == "error":
@@ -159,6 +176,7 @@ async def run_grading_job(
             failed += 1
             db.rollback()
 
+    gc.collect()
     job.processed_files = int(job.processed_files or 0) + processed
     job.failed_files = int(job.failed_files or 0) + failed
     tot_f = int(job.failed_files or 0)
@@ -173,6 +191,7 @@ async def run_grading_job(
         "status": job.status,
         "total_files": job.total_files,
         "processed_files": job.processed_files,
+        "batch_processed": processed,
         "failed_files": job.failed_files,
         "rubric_version": rubric_ver.version_number,
         "result_ids": result_ids,

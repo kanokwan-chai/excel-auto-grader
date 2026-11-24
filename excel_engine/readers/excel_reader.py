@@ -118,32 +118,51 @@ class LoadedWorkbooks:
             self.formula_wb.close()
         except Exception:
             pass
-        try:
-            self.value_wb.close()
-        except Exception:
-            pass
+        if self.value_wb is not self.formula_wb:
+            try:
+                self.value_wb.close()
+            except Exception:
+                pass
 
 
 def load_workbooks(
     formula_file_path: str | Path,
     value_file_path: str | Path | None = None,
+    load_formula: bool = True,
+    load_value: bool = True,
 ) -> LoadedWorkbooks:
     """
     Open the Excel workbook for formula inspection (data_only=False)
-    and value inspection (data_only=True).
+    and/or value inspection (data_only=True).
+    When only one mode is needed (e.g. chart-only or formula-only rubrics),
+    avoids opening and XML-parsing the entire workbook twice (~2x faster).
     """
     val_path = value_file_path or formula_file_path
     try:
-        formula_wb = openpyxl.load_workbook(
-            formula_file_path,
-            data_only=False,
-            keep_vba=False,
-        )
-        value_wb = openpyxl.load_workbook(
-            val_path,
-            data_only=True,
-            keep_vba=False,
-        )
+        formula_wb: Workbook | None = None
+        value_wb: Workbook | None = None
+
+        if load_formula:
+            formula_wb = openpyxl.load_workbook(
+                formula_file_path,
+                data_only=False,
+                keep_vba=False,
+            )
+        if load_value:
+            value_wb = openpyxl.load_workbook(
+                val_path,
+                data_only=True,
+                keep_vba=False,
+            )
+
+        if formula_wb is None and value_wb is not None:
+            formula_wb = value_wb
+        elif value_wb is None and formula_wb is not None:
+            value_wb = formula_wb
+        elif formula_wb is None and value_wb is None:
+            formula_wb = openpyxl.load_workbook(formula_file_path, data_only=False, keep_vba=False)
+            value_wb = formula_wb
+
         return LoadedWorkbooks(formula_wb=formula_wb, value_wb=value_wb)
     except Exception as exc:
         raise CorruptedExcelError(

@@ -263,6 +263,15 @@ app.include_router(classroom.router, prefix=API_PREFIX)
 app.include_router(reports.router, prefix=API_PREFIX)
 
 
+@app.middleware("http")
+async def no_cache_api_middleware(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Ensure unexpected 500 errors still pass through CORSMiddleware with a clear Thai message."""
@@ -274,12 +283,13 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 @app.on_event("startup")
 async def on_startup_repair():
-    await _auto_repair_stale_filter_rubrics_and_results()
+    import asyncio
+    asyncio.create_task(_auto_repair_stale_filter_rubrics_and_results())
 
 
 @app.get("/ping")
 def lightweight_ping():
-    return {"ok": True, "build": "fix-q5-v3", **_REPAIR_STATS}
+    return {"ok": True, "build": "fast-live-v4", **_REPAIR_STATS}
 
 
 @app.get("/health")

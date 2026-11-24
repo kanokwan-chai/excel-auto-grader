@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -138,6 +139,9 @@ def grade_single_submission(
     grading_job: GradingJob | None = None,
     enable_libreoffice: bool = True,
     force_regrade_confirmed: bool = False,
+    preloaded_ref_path: Path | None = None,
+    has_preloaded_ref: bool = False,
+    run_gc: bool = False,
 ) -> GradingResult:
     """
     Grade a single submission's primary Excel file.
@@ -208,21 +212,23 @@ def grade_single_submission(
         db.refresh(res)
         return res
 
-    ref_file = (
-        db.query(ReferenceFile)
-        .filter(
-            ReferenceFile.owner_user_id == owner_user_id,
-            ReferenceFile.assignment_id == assignment.id,
-            ReferenceFile.is_active.is_(True),
-        )
-        .order_by(ReferenceFile.created_at.desc())
-        .first()
-    )
-
     student_path: Path = storage_service.get_local_path(primary_file.storage_path, owner_user_id)
-    ref_path: Path | None = (
-        storage_service.get_local_path(ref_file.storage_path, owner_user_id) if ref_file else None
-    )
+    if has_preloaded_ref:
+        ref_path: Path | None = preloaded_ref_path
+    else:
+        ref_file = (
+            db.query(ReferenceFile)
+            .filter(
+                ReferenceFile.owner_user_id == owner_user_id,
+                ReferenceFile.assignment_id == assignment.id,
+                ReferenceFile.is_active.is_(True),
+            )
+            .order_by(ReferenceFile.created_at.desc())
+            .first()
+        )
+        ref_path = (
+            storage_service.get_local_path(ref_file.storage_path, owner_user_id) if ref_file else None
+        )
 
     rubric_cfg = build_rubric_config_from_version(rubric_version)
     engine = ExcelGradingEngine(
@@ -237,6 +243,7 @@ def grade_single_submission(
             student_file_path=student_path,
             rubric=rubric_cfg,
             reference_file_path=ref_path,
+            run_gc=run_gc,
         )
         primary_file.security_status = "safe"
         primary_file.has_macros = output.security_report.has_macros
@@ -273,7 +280,9 @@ def grade_single_submission(
         db.refresh(res)
         return res
 
+    res_id = str(uuid.uuid4())
     result = GradingResult(
+        id=res_id,
         owner_user_id=owner_user_id,
         grading_job_id=grading_job.id if grading_job else None,
         assignment_id=assignment.id,
@@ -289,13 +298,14 @@ def grade_single_submission(
         recalculated_with_libreoffice=output.recalculated_with_libreoffice,
         graded_at=datetime.now(timezone.utc),
     )
-    db.add(result)
-    db.flush()
 
+    batch_objs: list[Any] = [result]
     for det in output.details:
+        gd_id = str(uuid.uuid4())
         gd = GradingDetail(
+            id=gd_id,
             owner_user_id=owner_user_id,
-            grading_result_id=result.id,
+            grading_result_id=res_id,
             rubric_item_id=det.rubric_item_id if len(det.rubric_item_id) == 36 else None,
             item_title=det.item_title,
             category=det.category,
@@ -312,14 +322,13 @@ def grade_single_submission(
             suggestion=det.suggestion,
             evidence_json=det.evidence,
         )
-        db.add(gd)
-        db.flush()
+        batch_objs.append(gd)
         for err in det.errors:
-            db.add(
+            batch_objs.append(
                 GradingError(
                     owner_user_id=owner_user_id,
-                    grading_result_id=result.id,
-                    grading_detail_id=gd.id,
+                    grading_result_id=res_id,
+                    grading_detail_id=gd_id,
                     error_code=err.error_code,
                     severity=err.severity,
                     sheet_name=err.sheet_name,
@@ -331,16 +340,16 @@ def grade_single_submission(
                 )
             )
 
-    db.add(
+    batch_objs.append(
         ActivityLog(
             owner_user_id=owner_user_id,
             actor_user_id=owner_user_id,
             action="grade_submission",
             entity_type="grading_result",
-            entity_id=result.id,
+            entity_id=res_id,
             metadata_json={"score": result.final_score, "max_score": result.max_score},
         )
     )
+    db.add_all(batch_objs)
     db.commit()
-    db.refresh(result)
     return result

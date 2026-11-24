@@ -49,6 +49,7 @@ class ExcelGradingEngine:
         student_file_path: str | Path,
         rubric: RubricConfig,
         reference_file_path: str | Path | None = None,
+        run_gc: bool = True,
     ) -> WorkbookGradingOutput:
         rubric_validation_errors = validate_rubric_totals(rubric)
         if rubric_validation_errors:
@@ -67,10 +68,14 @@ class ExcelGradingEngine:
 
         try:
             enabled_categories = set(rubric.enabled_categories)
-            needs_value_recalc = any(
-                item.is_enabled and item.category == "value" and "value" in enabled_categories
+            active_cats = {
+                item.category
                 for item in rubric.items
-            )
+                if item.is_enabled and item.category in enabled_categories
+            }
+            needs_value_recalc = "value" in active_cats
+            needs_formula_wb = bool(active_cats & {"formula", "style", "structure", "chart"}) or not active_cats
+            needs_value_wb = bool(active_cats & {"value", "position", "structure", "completeness"})
 
             value_file_path: Path = Path(student_file_path)
             if self.enable_libreoffice and needs_value_recalc:
@@ -90,10 +95,17 @@ class ExcelGradingEngine:
             student_loaded = load_workbooks(
                 formula_file_path=student_file_path,
                 value_file_path=value_file_path,
+                load_formula=needs_formula_wb,
+                load_value=needs_value_wb,
             )
 
-            if reference_file_path and Path(reference_file_path).exists():
-                ref_loaded = load_workbooks(reference_file_path)
+            needs_ref = bool(active_cats & {"formula", "value", "position", "style"})
+            if needs_ref and reference_file_path and Path(reference_file_path).exists():
+                ref_loaded = load_workbooks(
+                    reference_file_path,
+                    load_formula=bool(active_cats & {"formula", "style"}),
+                    load_value=bool(active_cats & {"value", "position"}),
+                )
 
             results: list[RubricItemResult] = []
 
@@ -154,4 +166,5 @@ class ExcelGradingEngine:
             if ref_loaded:
                 ref_loaded.close()
             shutil.rmtree(temp_dir, ignore_errors=True)
-            gc.collect()
+            if run_gc:
+                gc.collect()

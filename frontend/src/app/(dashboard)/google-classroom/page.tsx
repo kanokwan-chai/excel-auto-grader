@@ -208,7 +208,7 @@ export default function GoogleClassroomWizardPage() {
     setLoading(true);
     setError(null);
     setBatchProgress(null);
-    const BATCH_SIZE = 4;
+    const BATCH_SIZE = 8;
     let totalGraded = 0;
     let totalFailed = 0;
     let lastJobId = "";

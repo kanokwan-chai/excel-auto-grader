@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import Link from "next/link";
 import {
   CheckCircle2,
   ClipboardCopy,
@@ -11,6 +12,7 @@ import {
   FlaskConical,
   Pencil,
   Plus,
+  RefreshCw,
   Sparkles,
   Trash2,
   Upload,
@@ -526,7 +528,15 @@ export default function RubricsPage() {
     setName(r.name);
     setAssignmentId(r.assignment_id || "");
     setTotalPoints(String(r.total_points));
-    setItems(r.items.length > 0 ? r.items.map((it, idx) => ({ ...it, order_index: idx })) : [makeEmptyItem(0)]);
+    setItems(
+      r.items.length > 0
+        ? r.items.map((it, idx) => ({
+            ...it,
+            order_index: idx,
+            rule_config: JSON.parse(JSON.stringify(it.rule_config || {})),
+          }))
+        : [makeEmptyItem(0)]
+    );
     setSampleInfo(null);
     setDryRunResult(null);
     setFreeformText("");
@@ -545,24 +555,34 @@ export default function RubricsPage() {
     try {
       const endpoint = editingRubricId ? `/rubrics/${editingRubricId}` : "/rubrics";
       const method = editingRubricId ? "PUT" : "POST";
-      await apiRequest(endpoint, {
+      const normalizedItems = items.map((it, idx) => ({
+        ...it,
+        order_index: idx,
+      }));
+      const saved = await apiRequest<Rubric>(endpoint, {
         method,
         body: JSON.stringify({
           name,
           assignment_id: assignmentId || null,
           total_points: Number(totalPoints),
-          items,
+          items: normalizedItems,
           change_note: editingRubricId ? "แก้ไขเกณฑ์การตรวจ" : "สร้างชุดเกณฑ์ใหม่",
         }),
       });
+      // Immediately reflect saved rubric in UI state so changes are 100% live right away
+      setRubrics((prev) =>
+        editingRubricId
+          ? [saved, ...prev.filter((r) => r.id !== saved.id)]
+          : [saved, ...prev]
+      );
       toast(
         editingRubricId
-          ? "บันทึกการแก้ไขเกณฑ์เรียบร้อยแล้ว ✨"
-          : "สร้างชุดเกณฑ์การตรวจสำเร็จ ✨"
+          ? `บันทึก "${saved.name}" (เวอร์ชัน ${saved.current_version}) เรียบร้อยแล้ว ✨`
+          : `สร้างชุดเกณฑ์ "${saved.name}" สำเร็จ ✨`
       );
       setOpenBuilder(false);
       setEditingRubricId(null);
-      load();
+      await load();
     } catch (err) {
       toast(err instanceof Error ? err.message : "บันทึกเกณฑ์ไม่สำเร็จ", "error");
     } finally {
@@ -635,6 +655,13 @@ export default function RubricsPage() {
               </div>
 
               <div className="flex flex-wrap justify-end gap-2 pt-2 border-t border-[#EAF5E7]">
+                <Link
+                  href={`/reports?rubric_id=${encodeURIComponent(r.id)}${r.assignment_id ? `&assignment_id=${encodeURIComponent(r.assignment_id)}` : ""}`}
+                >
+                  <Button size="sm" variant="mint">
+                    <RefreshCw className="h-3.5 w-3.5" /> รีตรวจด้วยเกณฑ์นี้
+                  </Button>
+                </Link>
                 <Button size="sm" variant="primary" onClick={() => openEditModal(r)}>
                   <Pencil className="h-3.5 w-3.5" /> แก้ไขเกณฑ์
                 </Button>

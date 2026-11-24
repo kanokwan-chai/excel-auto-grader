@@ -88,6 +88,7 @@ export default function ReportsPage() {
   const [rubrics, setRubrics] = useState<Rubric[]>([]);
   const [regradeRubricId, setRegradeRubricId] = useState("");
   const lastSyncedAssignmentRef = useRef<string>("");
+  const pinnedRubricFromUrlRef = useRef<string | null>(null);
   const [regrading, setRegrading] = useState(false);
   const [regradeProgress, setRegradeProgress] = useState<string | null>(null);
   const [overwriteConfirmed, setOverwriteConfirmed] = useState(true);
@@ -115,6 +116,12 @@ export default function ReportsPage() {
   };
 
   useEffect(() => {
+    const sp = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
+    const urlRubricId = sp?.get("rubric_id") || null;
+    const urlAssignId = sp?.get("assignment_id") || null;
+    if (urlRubricId) {
+      pinnedRubricFromUrlRef.current = urlRubricId;
+    }
     Promise.all([
       apiRequest<AssignmentItem[]>("/assignments"),
       apiRequest<Rubric[]>("/rubrics"),
@@ -122,14 +129,23 @@ export default function ReportsPage() {
       .then(([assignList, rubricList]) => {
         setAssignments(assignList);
         setRubrics(rubricList);
-        if (assignList.length > 0) setAssignmentId(assignList[0].id);
-        if (rubricList.length > 0) setRegradeRubricId(rubricList[0].id);
+        if (urlAssignId && assignList.some((a) => a.id === urlAssignId)) {
+          setAssignmentId(urlAssignId);
+        } else if (assignList.length > 0) {
+          setAssignmentId(assignList[0].id);
+        }
+        if (urlRubricId && rubricList.some((r) => r.id === urlRubricId)) {
+          setRegradeRubricId(urlRubricId);
+        } else if (rubricList.length > 0) {
+          setRegradeRubricId(rubricList[0].id);
+        }
       })
       .catch((err) => setError(err instanceof Error ? err.message : "โหลดรายการงานไม่สำเร็จ"));
   }, []);
 
   useEffect(() => {
     if (!assignmentId || rubrics.length === 0) return;
+    if (pinnedRubricFromUrlRef.current) return;
     const matched = rubrics.find((r) => r.assignment_id === assignmentId);
     if (matched) setRegradeRubricId(matched.id);
   }, [assignmentId, rubrics]);
@@ -150,7 +166,7 @@ export default function ReportsPage() {
 
     setRegrading(true);
     setRegradeProgress(null);
-    const BATCH_SIZE = 3;
+    const BATCH_SIZE = 10;
     let done = 0;
     try {
       if (subIds.length > 0) {
@@ -160,18 +176,21 @@ export default function ReportsPage() {
           const chunk = subIds.slice(i, i + BATCH_SIZE);
           const batchNum = Math.floor(i / BATCH_SIZE) + 1;
           setRegradeProgress(`กำลังรีการตรวจ (${done}/${subIds.length} คน)...`);
-          const res: { job_id?: string; processed_files: number } = await apiRequest("/grading/run", {
-            method: "POST",
-            body: JSON.stringify({
-              assignment_id: assignmentId,
-              rubric_id: regradeRubricId,
-              submission_ids: chunk,
-              force_regrade_confirmed: overwriteConfirmed,
-              job_id: sharedJobId,
-            }),
-          });
+          const res: { job_id?: string; processed_files: number; batch_processed?: number } = await apiRequest(
+            "/grading/run",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                assignment_id: assignmentId,
+                rubric_id: regradeRubricId,
+                submission_ids: chunk,
+                force_regrade_confirmed: overwriteConfirmed,
+                job_id: sharedJobId,
+              }),
+            }
+          );
           if (res.job_id) sharedJobId = res.job_id;
-          done += res.processed_files;
+          done = res.processed_files;
           void batchNum;
           void totalBatches;
         }
@@ -211,9 +230,10 @@ export default function ReportsPage() {
       setReport(data);
       if (lastSyncedAssignmentRef.current !== assignmentId) {
         lastSyncedAssignmentRef.current = assignmentId;
-        if (data.summary.last_rubric_id) {
+        if (!pinnedRubricFromUrlRef.current && data.summary.last_rubric_id) {
           setRegradeRubricId(data.summary.last_rubric_id);
         }
+        pinnedRubricFromUrlRef.current = null;
       }
       setSelectedIds(data.rows.map((r) => r.result_id));
       setBatchResult(null);

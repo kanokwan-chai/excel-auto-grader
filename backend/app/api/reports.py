@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from backend.app.api.deps import get_current_teacher
 from backend.app.core.database import get_db
@@ -40,6 +40,7 @@ def _build_class_report_data(
 
     results = (
         db.query(GradingResult, Submission, Student)
+        .options(selectinload(GradingResult.details))
         .join(Submission, GradingResult.submission_id == Submission.id)
         .outerjoin(Student, GradingResult.student_id == Student.id)
         .filter(

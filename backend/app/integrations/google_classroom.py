@@ -296,6 +296,76 @@ async def fetch_drive_file_metadata(
     return None
 
 
+async def fetch_drive_metadata_batch(
+    db: Session,
+    conn: GoogleConnection,
+    drive_file_ids: list[str],
+    concurrency: int = 10,
+) -> dict[str, dict[str, Any]]:
+    """Concurrently fetch Drive metadata for many files using ONE shared HTTP client (~10x faster)."""
+    unique_ids = [fid for fid in dict.fromkeys(drive_file_ids) if fid]
+    if not unique_ids:
+        return {}
+    token = await ensure_valid_access_token(db, conn)
+    sem = asyncio.Semaphore(concurrency)
+    results: dict[str, dict[str, Any]] = {}
+
+    async with httpx.AsyncClient(timeout=12.0) as client:
+        async def _one(fid: str) -> None:
+            async with sem:
+                try:
+                    resp = await client.get(
+                        f"{DRIVE_API_BASE}/files/{fid}",
+                        params={"fields": "id,name,mimeType,modifiedTime,createdTime,size"},
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                    if resp.status_code == 200:
+                        results[fid] = resp.json()
+                except Exception:
+                    pass
+
+        await asyncio.gather(*(_one(fid) for fid in unique_ids))
+    return results
+
+
+async def download_drive_files_batch(
+    db: Session,
+    conn: GoogleConnection,
+    targets: list[tuple[str, str | None]],
+    concurrency: int = 6,
+) -> dict[str, tuple[bytes, str] | Exception]:
+    """Concurrently download multiple Excel/Sheet files from Google Drive (~6x faster)."""
+    if not targets:
+        return {}
+    token = await ensure_valid_access_token(db, conn)
+    sem = asyncio.Semaphore(concurrency)
+    out: dict[str, tuple[bytes, str] | Exception] = {}
+
+    async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
+        async def _one(fid: str, mime_type: str | None) -> None:
+            async with sem:
+                try:
+                    if mime_type == "application/vnd.google-apps.spreadsheet":
+                        url = f"{DRIVE_API_BASE}/files/{fid}/export"
+                        params = {"mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+                    else:
+                        url = f"{DRIVE_API_BASE}/files/{fid}"
+                        params = {"alt": "media"}
+                    resp = await client.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
+                    if resp.status_code != 200:
+                        out[fid] = GoogleAPIError(
+                            f"ไม่สามารถดาวน์โหลดไฟล์จาก Google Drive ({fid}): HTTP {resp.status_code}",
+                            status_code=resp.status_code,
+                        )
+                    else:
+                        out[fid] = (resp.content, ".xlsx")
+                except Exception as exc:
+                    out[fid] = exc
+
+        await asyncio.gather(*(_one(fid, mt) for fid, mt in targets))
+    return out
+
+
 async def download_drive_excel_file(
     db: Session,
     conn: GoogleConnection,

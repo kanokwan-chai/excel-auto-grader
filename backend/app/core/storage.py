@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import uuid
 from pathlib import Path
 from typing import Literal
@@ -64,27 +65,31 @@ class StorageService:
         local_target.parent.mkdir(parents=True, exist_ok=True)
         local_target.write_bytes(content)
 
-        # If Supabase Storage is configured, upload to Private Bucket as well
+        # If Supabase Storage is configured, upload to Private Bucket asynchronously
+        # so grading/syncing NEVER blocks waiting on remote storage HTTP latency!
         if settings.SUPABASE_URL and settings.SUPABASE_SERVICE_ROLE_KEY:
             upload_url = (
                 f"{settings.SUPABASE_URL.rstrip('/')}/storage/v1/object/"
                 f"{settings.SUPABASE_STORAGE_BUCKET}/{rel_path}"
             )
-            try:
-                httpx.post(
-                    upload_url,
-                    headers={
-                        "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
-                        "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
-                        "Content-Type": content_type,
-                        "x-upsert": "true",
-                    },
-                    content=content,
-                    timeout=30.0,
-                )
-            except Exception:
-                # Local copy already persisted; log in production monitoring
-                pass
+            headers = {
+                "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
+                "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
+                "Content-Type": content_type,
+                "x-upsert": "true",
+            }
+
+            def _bg_upload(url: str, hdrs: dict[str, str], data: bytes) -> None:
+                try:
+                    httpx.post(url, headers=hdrs, content=data, timeout=30.0)
+                except Exception:
+                    pass
+
+            threading.Thread(
+                target=_bg_upload,
+                args=(upload_url, headers, content),
+                daemon=True,
+            ).start()
 
         return rel_path
 
