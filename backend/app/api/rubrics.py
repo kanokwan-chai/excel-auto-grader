@@ -768,16 +768,78 @@ async def inspect_sample_excel_for_rubric(
 
     suggested_items: list[dict] = []
     idx = 0
-    for sheet in metadata.get("sheets", []):
+    sheets_meta = metadata.get("sheets", [])
+    any_sheet_filtered = any(int(s.get("hidden_row_count") or 0) > 0 for s in sheets_meta)
+    columns_by_sheet: dict[str, list[str]] = {}
+
+    for sheet in sheets_meta:
         sname = sheet["name"]
-        for f_info in sheet.get("formulas", [])[:20]:
+        columns_by_sheet[sname] = [h["value"] for h in sheet.get("headers", []) if h.get("value")]
+
+        # 1) Grouped Formula Rules (100% exact per-cell formula ground-truth!)
+        for fg in sheet.get("formula_groups", [])[:25]:
+            fn_label = ", ".join(fg.get("functions") or []) or "สูตรคำนวณ"
+            col_hdr = fg.get("column_header") or fg.get("range")
             suggested_items.append({
                 "order_index": idx,
-                "title": f"สูตรเซลล์ {f_info['cell']} ({sname})",
+                "title": f"ตรวจสูตร {fn_label} — {col_hdr} ({fg['range']} แท็บ {sname})",
+                "description": f"ตรวจสูตร {fn_label} ในช่วง {fg['range']} เทียบไฟล์เฉลยเป๊ะทุกเซลล์",
                 "category": "formula",
                 "sheet_name": sname,
-                "target_cell": f_info["cell"],
-                "rule_config": {"expected_formula": f_info["formula"]},
+                "target_cell": fg["range"],
+                "rule_config": {
+                    "required_functions": fg.get("functions") or [],
+                    "expected_formula": fg["first_formula"],
+                    "expected_formulas_by_cell": fg.get("formulas_by_cell") or {},
+                },
+                "max_points": 2.0,
+                "min_points": 0.0,
+                "allow_partial_credit": True,
+                "weight_importance": "high",
+                "zero_on_error": False,
+                "is_enabled": True,
+            })
+            idx += 1
+
+        # 2) AutoFilter Ground-Truth Rules per tab!
+        af_ref = sheet.get("auto_filter_ref")
+        hid_cnt = int(sheet.get("hidden_row_count") or 0)
+        vis_nums = sheet.get("visible_row_numbers") or []
+        vis_keys = sheet.get("visible_first_col_keys") or []
+        if hid_cnt > 0:
+            suggested_items.append({
+                "order_index": idx,
+                "title": f"ตรวจตัวกรองข้อมูลแท็บ {sname} (แสดง {len(vis_nums)} รายการตามเฉลย)",
+                "description": f"เทียบแถวที่กรองแสดงในแท็บ '{sname}' ให้ตรงกับไฟล์เฉลยเป๊ะ 100% ({len(vis_nums)} รายการ)",
+                "category": "structure",
+                "sheet_name": sname,
+                "target_cell": "",
+                "rule_config": {
+                    "require_autofilter": True,
+                    "expected_visible_row_numbers": vis_nums,
+                    "expected_visible_keys": vis_keys,
+                },
+                "max_points": 2.0,
+                "min_points": 0.0,
+                "allow_partial_credit": True,
+                "weight_importance": "high",
+                "zero_on_error": False,
+                "is_enabled": True,
+            })
+            idx += 1
+        elif any_sheet_filtered and len(sheets_meta) >= 2 and len(vis_nums) > 0:
+            # Unfiltered tab in a multi-tab filter workbook (e.g. ข้อ 6 ยกเลิกตัวกรอง แสดงครบ 30 รายการ!)
+            suggested_items.append({
+                "order_index": idx,
+                "title": f"ตรวจการยกเลิกตัวกรองแท็บ {sname} (แสดงครบ {len(vis_nums)} รายการ)",
+                "description": f"ตรวจสอบว่าแท็บ '{sname}' ยกเลิกตัวกรองและแสดงข้อมูลครบทั้ง {len(vis_nums)} รายการ",
+                "category": "structure",
+                "sheet_name": sname,
+                "target_cell": "",
+                "rule_config": {
+                    "require_no_active_filter": True,
+                    "expected_visible_rows": len(vis_nums),
+                },
                 "max_points": 2.0,
                 "min_points": 0.0,
                 "allow_partial_credit": True,
@@ -786,13 +848,33 @@ async def inspect_sample_excel_for_rubric(
                 "is_enabled": True,
             })
             idx += 1
+        elif af_ref and not any_sheet_filtered:
+            suggested_items.append({
+                "order_index": idx,
+                "title": f"ตรวจการเปิดปุ่มตัวกรอง (AutoFilter) แท็บ {sname}",
+                "description": f"ตรวจสอบการเปิดใช้งาน AutoFilter ในแท็บ '{sname}'",
+                "category": "structure",
+                "sheet_name": sname,
+                "target_cell": "",
+                "rule_config": {"require_autofilter": True},
+                "max_points": 2.0,
+                "min_points": 0.0,
+                "allow_partial_credit": True,
+                "weight_importance": "normal",
+                "zero_on_error": False,
+                "is_enabled": True,
+            })
+            idx += 1
+
+        # 3) Chart Rules
         for ch in sheet.get("charts", []):
             suggested_items.append({
                 "order_index": idx,
-                "title": f"แผนภูมิ ({ch.get('title') or ch.get('type')})",
+                "title": f"ตรวจแผนภูมิ ({ch.get('title') or ch.get('type')}) แท็บ {sname}",
+                "description": "ตรวจสอบการสร้างแผนภูมิเทียบต้นฉบับ",
                 "category": "chart",
                 "sheet_name": sname,
-                "target_cell": None,
+                "target_cell": "",
                 "rule_config": {"expected_title": ch.get("title") or ""},
                 "max_points": 2.0,
                 "min_points": 0.0,
@@ -803,32 +885,124 @@ async def inspect_sample_excel_for_rubric(
             })
             idx += 1
 
-    if metadata.get("sheet_names"):
+    # Fallback if plain data sheet without formulas/filters/charts
+    if not suggested_items and metadata.get("sheet_names"):
         suggested_items.append({
-            "order_index": idx,
-            "title": "โครงสร้าง Worksheet ครบตามต้นฉบับ",
+            "order_index": 0,
+            "title": "ตรวจโครงสร้าง Worksheet ครบตามต้นฉบับ",
             "category": "structure",
             "sheet_name": metadata["sheet_names"][0],
-            "target_cell": None,
+            "target_cell": "",
             "rule_config": {
                 "required_sheets": metadata["sheet_names"],
                 "exact_sheet_count": metadata["sheet_count"],
             },
-            "max_points": 2.0,
+            "max_points": 20.0,
             "min_points": 0.0,
             "allow_partial_credit": True,
             "weight_importance": "normal",
             "zero_on_error": False,
             "is_enabled": True,
         })
+    elif suggested_items:
+        # Auto-balance points cleanly to 20.0 so teacher doesn't have to calculate by hand!
+        target_total = 20.0
+        base_pts = int((target_total / len(suggested_items)) * 100) / 100.0
+        running_pts = 0.0
+        for s_i, s_it in enumerate(suggested_items):
+            if s_i == len(suggested_items) - 1:
+                s_it["max_points"] = round(target_total - running_pts, 2)
+            else:
+                s_it["max_points"] = base_pts
+                running_pts = round(running_pts + base_pts, 2)
 
     return {
         "filename": filename,
+        "storage_path": storage_path,
         "saved_reference_id": saved_reference_id,
         "has_macros": sec.has_macros,
         "warnings": sec.warnings,
         "sheet_metadata": metadata,
+        "columns_by_sheet": columns_by_sheet,
         "suggested_items": suggested_items,
+    }
+
+
+class TestRubricSampleRequest(BaseModel):
+    storage_path: str
+    total_points: float = 20.0
+    items: list[dict[str, Any]]
+
+
+@router.post("/test-sample")
+def dry_run_rubric_against_sample(
+    payload: TestRubricSampleRequest,
+    current_teacher: User = Depends(get_current_teacher),
+):
+    """Run the REAL ExcelGradingEngine on the teacher's Answer Key file to verify 100% accuracy before saving."""
+    from excel_engine.models import RubricConfig, RubricItemConfig
+    from excel_engine.scoring.engine import ExcelGradingEngine
+
+    try:
+        local_path = storage_service.get_local_path(payload.storage_path, current_teacher.id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="ไม่พบไฟล์เฉลยที่แนบไว้ กรุณาอัปโหลดไฟล์เฉลยใหม่อีกครั้ง")
+
+    cfg_items = [
+        RubricItemConfig(
+            id=str(it.get("id") or f"item_{idx}"),
+            title=str(it.get("title") or f"ข้อที่ {idx + 1}"),
+            category=str(it.get("category") or "formula"),
+            sheet_name=it.get("sheet_name") or None,
+            target_cell=it.get("target_cell") or None,
+            rule_config=it.get("rule_config") or {},
+            max_points=float(it.get("max_points") or 0.0),
+            min_points=float(it.get("min_points") or 0.0),
+            allow_partial_credit=bool(it.get("allow_partial_credit", True)),
+            weight_importance=str(it.get("weight_importance") or "normal"),
+            zero_on_error=bool(it.get("zero_on_error", False)),
+            is_enabled=bool(it.get("is_enabled", True)),
+        )
+        for idx, it in enumerate(payload.items)
+    ]
+    rubric_cfg = RubricConfig(
+        id="dry_run_preview",
+        name="Dry Run Test",
+        version=1,
+        total_points=float(payload.total_points),
+        items=cfg_items,
+    )
+    engine = ExcelGradingEngine(
+        libreoffice_bin=settings.LIBREOFFICE_BIN,
+        max_file_size_mb=settings.EXCEL_MAX_FILE_SIZE_MB,
+        recalc_timeout_seconds=settings.EXCEL_RECALC_TIMEOUT_SECONDS,
+        enable_libreoffice=False,
+    )
+    try:
+        out = engine.grade(
+            student_file_path=local_path,
+            rubric=rubric_cfg,
+            reference_file_path=local_path,
+        )
+    except ExcelEngineError as exc:
+        raise HTTPException(status_code=400, detail=exc.message)
+
+    return {
+        "auto_score": out.auto_score,
+        "max_score": out.max_score,
+        "percentage": out.percentage,
+        "all_passed": all(d.passed for d in out.details),
+        "details": [
+            {
+                "item_title": d.item_title,
+                "earned_points": d.earned_points,
+                "max_points": d.max_points,
+                "passed": d.passed,
+                "reason": d.reason,
+                "suggestion": d.suggestion,
+            }
+            for d in out.details
+        ],
     }
 
 

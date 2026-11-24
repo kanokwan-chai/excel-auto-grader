@@ -103,7 +103,8 @@ def check_formula_item(
         raw_val = ws[coord].value
         actual_formula = raw_val if isinstance(raw_val, str) and raw_val.strip().startswith("=") else None
 
-        expected_formula = cfg.get("expected_formula")
+        expected_by_cell = cfg.get("expected_formulas_by_cell") or {}
+        expected_formula = expected_by_cell.get(coord) or cfg.get("expected_formula")
         if expected_formula is None and ref_ws is not None:
             ref_val = ref_ws[coord].value
             if isinstance(ref_val, str) and ref_val.strip().startswith("="):

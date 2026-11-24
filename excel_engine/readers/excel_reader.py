@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import openpyxl
+from openpyxl.utils import get_column_letter
 from openpyxl.workbook import Workbook
 
 from excel_engine.exceptions import CorruptedExcelError
+from excel_engine.formula_checker.normalizer import analyze_formula
 
 
 @dataclass
@@ -56,7 +59,7 @@ def load_workbooks(
 
 
 def extract_workbook_metadata(file_path: str | Path) -> dict[str, Any]:
-    """Inspect a reference or student workbook and return sheets, formulas, tables, charts."""
+    """Inspect a reference/answer-key workbook: sheets, headers, grouped formulas, AutoFilter ground-truth, charts."""
     loaded = load_workbooks(file_path)
     try:
         sheets_info: list[dict[str, Any]] = []
@@ -64,23 +67,123 @@ def extract_workbook_metadata(file_path: str | Path) -> dict[str, Any]:
             f_ws = loaded.formula_wb[sheet_name]
             v_ws = loaded.value_wb[sheet_name]
 
-            formulas: list[dict[str, Any]] = []
-            headers: list[dict[str, Any]] = []
+            max_r = min(f_ws.max_row or 0, 500)
+            max_c = min(f_ws.max_column or 0, 50)
 
-            for row_idx in range(1, min(f_ws.max_row or 0, 500) + 1):
-                for col_idx in range(1, min(f_ws.max_column or 0, 50) + 1):
+            # Detect AutoFilter ref (sheet or Table)
+            af_ref: str | None = None
+            af_obj = getattr(f_ws, "auto_filter", None)
+            if af_obj and getattr(af_obj, "ref", None):
+                af_ref = str(af_obj.ref)
+            elif getattr(f_ws, "tables", None):
+                for tbl in f_ws.tables.values():
+                    taf = getattr(tbl, "autoFilter", None)
+                    if taf and getattr(taf, "ref", None):
+                        af_ref = str(taf.ref)
+                        break
+
+            # Detect header row (from AutoFilter start row or first row with >=2 cells)
+            header_row = 1
+            af_end_row: int | None = None
+            if af_ref:
+                m_af = re.match(r"^[A-Za-z]+(\d+):[A-Za-z]+(\d+)$", af_ref.replace("$", "").strip())
+                if m_af:
+                    header_row = int(m_af.group(1))
+                    if int(m_af.group(2)) > header_row:
+                        af_end_row = int(m_af.group(2))
+            else:
+                for r_try in range(1, min(max_r, 10) + 1):
+                    non_empty = [
+                        f_ws.cell(row=r_try, column=c_i).value
+                        for c_i in range(1, max_c + 1)
+                        if f_ws.cell(row=r_try, column=c_i).value is not None
+                    ]
+                    if len(non_empty) >= 2:
+                        header_row = r_try
+                        break
+
+            headers: list[dict[str, Any]] = []
+            header_map_by_col: dict[int, str] = {}
+            for col_idx in range(1, max_c + 1):
+                h_cell = v_ws.cell(row=header_row, column=col_idx)
+                h_val = h_cell.value if h_cell.value is not None else f_ws.cell(row=header_row, column=col_idx).value
+                if h_val is not None and str(h_val).strip() != "":
+                    col_let = get_column_letter(col_idx)
+                    h_str = str(h_val).strip()
+                    headers.append({"cell": f"{col_let}{header_row}", "col": col_let, "value": h_str})
+                    header_map_by_col[col_idx] = h_str
+
+            formulas: list[dict[str, Any]] = []
+            col_formula_runs: dict[int, list[tuple[int, str, str, list[str]]]] = {}
+
+            for row_idx in range(1, max_r + 1):
+                for col_idx in range(1, max_c + 1):
                     cell = f_ws.cell(row=row_idx, column=col_idx)
                     val_cell = v_ws.cell(row=row_idx, column=col_idx)
-                    if row_idx == 1 and cell.value is not None:
-                        headers.append({"cell": cell.coordinate, "value": str(cell.value)})
                     if isinstance(cell.value, str) and cell.value.startswith("="):
+                        funcs = analyze_formula(cell.value).functions
                         formulas.append(
                             {
                                 "cell": cell.coordinate,
                                 "formula": cell.value,
+                                "functions": funcs,
                                 "cached_value": val_cell.value,
                             }
                         )
+                        col_formula_runs.setdefault(col_idx, []).append(
+                            (row_idx, cell.coordinate, cell.value, funcs)
+                        )
+
+            # Group contiguous formulas in the same column sharing the same function signature
+            formula_groups: list[dict[str, Any]] = []
+            for col_idx, entries in sorted(col_formula_runs.items()):
+                entries.sort(key=lambda x: x[0])
+                col_let = get_column_letter(col_idx)
+                col_header = header_map_by_col.get(col_idx, f"คอลัมน์ {col_let}")
+                curr_group: list[tuple[int, str, str, list[str]]] = []
+                for entry in entries:
+                    if not curr_group:
+                        curr_group = [entry]
+                    else:
+                        prev_r, _, _, prev_funcs = curr_group[-1]
+                        if entry[0] == prev_r + 1 and entry[3] == prev_funcs:
+                            curr_group.append(entry)
+                        else:
+                            formula_groups.append(_pack_formula_group(col_let, col_header, curr_group))
+                            curr_group = [entry]
+                if curr_group:
+                    formula_groups.append(_pack_formula_group(col_let, col_header, curr_group))
+
+            # Inspect visible vs hidden data rows for exact AutoFilter ground-truth
+            scan_end = min(max_r, af_end_row) if af_end_row else max_r
+            visible_row_nums: list[int] = []
+            hidden_row_nums: list[int] = []
+            visible_keys: list[str] = []
+            all_keys: list[str] = []
+            for r_i in range(header_row + 1, scan_end + 1):
+                has_data = any(
+                    (v_ws.cell(row=r_i, column=c_i).value is not None and str(v_ws.cell(row=r_i, column=c_i).value).strip() != "")
+                    or (f_ws.cell(row=r_i, column=c_i).value is not None and str(f_ws.cell(row=r_i, column=c_i).value).strip() != "")
+                    for c_i in range(1, max_c + 1)
+                )
+                if not has_data:
+                    continue
+                k_raw = v_ws.cell(row=r_i, column=1).value
+                if k_raw is None:
+                    k_raw = f_ws.cell(row=r_i, column=1).value
+                k_str = str(k_raw).strip() if k_raw is not None else ""
+                if k_str:
+                    all_keys.append(k_str)
+                is_hid = bool(getattr(f_ws.row_dimensions[r_i], "hidden", False))
+                if is_hid:
+                    hidden_row_nums.append(r_i)
+                else:
+                    visible_row_nums.append(r_i)
+                    if k_str:
+                        visible_keys.append(k_str)
+
+            # Use first-column keys only if they are unique across all data rows (like Product ID / Student Code)
+            unique_first_col = len(all_keys) > 0 and len(set(all_keys)) == len(all_keys)
 
             charts = [
                 {
@@ -96,9 +199,15 @@ def extract_workbook_metadata(file_path: str | Path) -> dict[str, Any]:
                     "sheet_state": f_ws.sheet_state,
                     "max_row": f_ws.max_row,
                     "max_column": f_ws.max_column,
+                    "header_row": header_row,
                     "headers": headers,
                     "formula_count": len(formulas),
                     "formulas": formulas[:200],
+                    "formula_groups": formula_groups,
+                    "auto_filter_ref": af_ref,
+                    "visible_row_numbers": visible_row_nums,
+                    "hidden_row_count": len(hidden_row_nums),
+                    "visible_first_col_keys": visible_keys if unique_first_col else [],
                     "tables": list(f_ws.tables.keys()) if hasattr(f_ws, "tables") else [],
                     "charts": charts,
                     "merged_cells": [str(rng) for rng in f_ws.merged_cells.ranges],
@@ -112,6 +221,26 @@ def extract_workbook_metadata(file_path: str | Path) -> dict[str, Any]:
         }
     finally:
         loaded.close()
+
+
+def _pack_formula_group(
+    col_let: str,
+    col_header: str,
+    group: list[tuple[int, str, str, list[str]]],
+) -> dict[str, Any]:
+    first_coord = group[0][1]
+    last_coord = group[-1][1]
+    rng = first_coord if len(group) == 1 else f"{first_coord}:{last_coord}"
+    funcs = group[0][3]
+    return {
+        "column": col_let,
+        "column_header": col_header,
+        "range": rng,
+        "count": len(group),
+        "first_formula": group[0][2],
+        "functions": funcs,
+        "formulas_by_cell": {coord: f_str for _, coord, f_str, _ in group[:120]},
+    }
 
 
 def _extract_chart_title_simple(chart: Any) -> str | None:

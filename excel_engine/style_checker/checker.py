@@ -776,6 +776,8 @@ def check_structure_item(
         or cfg.get("require_filter_applied")
         or cfg.get("require_no_active_filter")
         or cfg.get("filter_conditions")
+        or cfg.get("expected_visible_row_numbers")
+        or cfg.get("expected_visible_keys")
     ):
         ws, resolved_sheet = _resolve_worksheet_fuzzy(student_wb, item.sheet_name)
         if ws is None:
@@ -860,7 +862,12 @@ def check_structure_item(
                     )
 
             # Case C: At least one filter applied
-            if cfg.get("require_filter_applied") and not cfg.get("filter_conditions"):
+            if (
+                cfg.get("require_filter_applied")
+                and not cfg.get("filter_conditions")
+                and not cfg.get("expected_visible_row_numbers")
+                and not cfg.get("expected_visible_keys")
+            ):
                 total += 1
                 if has_filter_col or len(hidden_rows) > 0:
                     passed += 1
@@ -876,6 +883,76 @@ def check_structure_item(
                             fix_suggestion_th="คลิกปุ่มลูกศร Filter ที่หัวคอลัมน์แล้วเลือกเงื่อนไขกรองตามโจทย์",
                         )
                     )
+
+            # Case C2: Exact Ground-Truth Match against Answer Key's filtered rows (100% Zero-Guesswork!)
+            exp_keys = cfg.get("expected_visible_keys") or []
+            exp_row_nums = cfg.get("expected_visible_row_numbers") or []
+            if (exp_keys or exp_row_nums) and not cfg.get("filter_conditions"):
+                val_ws_gt = (
+                    student_value_wb[resolved_sheet]
+                    if (student_value_wb is not None and resolved_sheet in student_value_wb.sheetnames)
+                    else ws
+                )
+                total += 1
+                if exp_keys:
+                    stu_vis_keys = [
+                        _clean_text_nfc(
+                            val_ws_gt.cell(row=r_i, column=1).value
+                            if val_ws_gt.cell(row=r_i, column=1).value is not None
+                            else ws.cell(row=r_i, column=1).value
+                        )
+                        for r_i in visible_rows
+                    ]
+                    stu_set = {k for k in stu_vis_keys if k}
+                    exp_key_set = {_clean_text_nfc(k) for k in exp_keys if _clean_text_nfc(k)}
+                    extra = sorted(stu_set - exp_key_set)
+                    missing = sorted(exp_key_set - stu_set)
+                    if not extra and not missing:
+                        passed += 1
+                    else:
+                        msg_bits = []
+                        if len(hidden_rows) == 0 and len(exp_key_set) < len(data_rows):
+                            msg_bits.append("ยังไม่ได้กรองข้อมูล (ยังแสดงครบทุกแถว)")
+                        else:
+                            if extra:
+                                msg_bits.append(f"แสดงรายการเกินมาจากเฉลย {len(extra)} รายการ (เช่น {', '.join(extra[:3])})")
+                            if missing:
+                                msg_bits.append(f"ขาดรายการที่ควรแสดง {len(missing)} รายการ (เช่น {', '.join(missing[:3])})")
+                        errors.append(
+                            GradingErrorRecord(
+                                error_code="FILTER_ANSWER_KEY_MISMATCH",
+                                severity="error",
+                                sheet_name=resolved_sheet,
+                                message_th=f"แท็บ '{resolved_sheet}' ผลการกรองไม่ตรงกับไฟล์เฉลย: " + " / ".join(msg_bits),
+                                expected_detail=f"แสดง {len(exp_key_set)} รายการตรงตามเฉลย",
+                                actual_detail=f"แสดง {len(stu_set)} รายการ",
+                                fix_suggestion_th=f"ตรวจสอบเงื่อนไขตัวกรองในแท็บ '{resolved_sheet}' ให้แสดงเฉพาะรายการตามโจทย์",
+                            )
+                        )
+                else:
+                    stu_r_set = set(visible_rows)
+                    exp_r_set = {int(x) for x in exp_row_nums}
+                    extra_r = sorted(stu_r_set - exp_r_set)
+                    missing_r = sorted(exp_r_set - stu_r_set)
+                    if not extra_r and not missing_r:
+                        passed += 1
+                    else:
+                        msg_bits = []
+                        if extra_r:
+                            msg_bits.append(f"แสดงเกินมา {len(extra_r)} แถว (แถว {', '.join(map(str, extra_r[:3]))})")
+                        if missing_r:
+                            msg_bits.append(f"ซ่อนแถวที่ควรแสดงไป {len(missing_r)} แถว (แถว {', '.join(map(str, missing_r[:3]))})")
+                        errors.append(
+                            GradingErrorRecord(
+                                error_code="FILTER_ANSWER_KEY_MISMATCH",
+                                severity="error",
+                                sheet_name=resolved_sheet,
+                                message_th=f"แท็บ '{resolved_sheet}' ผลการกรองไม่ตรงกับไฟล์เฉลย: " + " / ".join(msg_bits),
+                                expected_detail=f"แสดง {len(exp_r_set)} แถว",
+                                actual_detail=f"แสดง {len(stu_r_set)} แถว",
+                                fix_suggestion_th=f"ตรวจสอบเงื่อนไขตัวกรองในแท็บ '{resolved_sheet}'",
+                            )
+                        )
 
             # Case D: Detailed filter_conditions verification (supports ALL operators & multi-column AND!)
             conditions = cfg.get("filter_conditions") or []
