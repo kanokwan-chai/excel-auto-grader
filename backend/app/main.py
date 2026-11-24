@@ -310,7 +310,7 @@ async def on_startup_repair():
 
 @app.get("/ping")
 def lightweight_ping():
-    return {"ok": True, "build": "fast-live-v8", **_REPAIR_STATS}
+    return {"ok": True, "build": "fast-live-v9", **_REPAIR_STATS}
 
 
 @app.get("/health")

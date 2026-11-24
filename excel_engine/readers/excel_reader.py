@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import re
+import tempfile
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -125,6 +128,183 @@ class LoadedWorkbooks:
                 pass
 
 
+_BLOATED_SHEET_XML_BYTES = 1_500_000  # 1.5 MB uncompressed sheet XML -> student formatted 100k+ empty rows
+_BLOATED_MEDIA_BYTES = 2_000_000      # 2 MB embedded image inside xlsx
+_MAX_SANITIZED_ROW = 1500
+_RE_DIMENSION_TAG = re.compile(rb"<(?:[A-Za-z0-9_]+:)?dimension\b[^>]*/>")
+_RE_SHEETDATA_OPEN = re.compile(rb"<(?:[A-Za-z0-9_]+:)?sheetData(?:\s[^>]*)?>")
+_RE_SHEETDATA_CLOSE = re.compile(rb"</(?:[A-Za-z0-9_]+:)?sheetData>")
+_RE_ROW_OPEN = re.compile(rb"<(?:[A-Za-z0-9_]+:)?row\b")
+_RE_ROW_NUM = re.compile(rb'\br="(\d+)"')
+_RE_EMPTY_FAR_CELL = re.compile(rb'<c\s+r="[A-Z]{2,}\d+"[^>]*/>')
+
+
+def _trim_bloated_sheet_xml(raw_stream: Any, max_row: int = _MAX_SANITIZED_ROW) -> bytes:
+    """
+    Stream-filter a bloated worksheet XML (e.g. 50 MB+ from Ctrl+A formatting 1,048,576 empty rows)
+    keeping all rows <= max_row AND preserving 100% of <autoFilter>, <mergeCells>, <drawing> (charts), etc.
+    Uses tiny RAM so Render 512MB never OOM-kills openpyxl.
+    """
+    out = bytearray()
+    buf = b""
+    state = "BEFORE"  # BEFORE -> IN_DATA -> AFTER
+    eof = False
+
+    def _refill() -> bool:
+        nonlocal buf, eof
+        if eof:
+            return False
+        chunk = raw_stream.read(262144)
+        if not chunk:
+            eof = True
+            return False
+        buf += chunk
+        return True
+
+    while True:
+        if state == "BEFORE":
+            m_open = _RE_SHEETDATA_OPEN.search(buf)
+            if not m_open:
+                if _refill():
+                    continue
+                out.extend(_RE_DIMENSION_TAG.sub(b"", buf))
+                break
+            prefix = _RE_DIMENSION_TAG.sub(b"", buf[: m_open.end()])
+            out.extend(prefix)
+            buf = buf[m_open.end() :]
+            if m_open.group(0).endswith(b"/>"):
+                state = "AFTER"
+            else:
+                state = "IN_DATA"
+            continue
+
+        if state == "IN_DATA":
+            # Look for either next <row or </sheetData>
+            m_close = _RE_SHEETDATA_CLOSE.search(buf)
+            m_row = _RE_ROW_OPEN.search(buf)
+
+            if m_close and (not m_row or m_close.start() < m_row.start()):
+                out.extend(buf[: m_close.end()])
+                buf = buf[m_close.end() :]
+                state = "AFTER"
+                continue
+
+            if not m_row:
+                if _refill():
+                    continue
+                out.extend(buf)
+                break
+
+            # Discard whitespace/junk before <row if any, keep from m_row.start()
+            if m_row.start() > 0:
+                buf = buf[m_row.start() :]
+
+            gt_pos = buf.find(b">")
+            while gt_pos == -1:
+                if not _refill():
+                    break
+                gt_pos = buf.find(b">")
+            if gt_pos == -1:
+                break
+
+            open_tag = buf[: gt_pos + 1]
+            is_self_closing = open_tag.endswith(b"/>")
+
+            if is_self_closing:
+                row_end = gt_pos + 1
+            else:
+                # Find matching closing </row> (or </x:row>)
+                close_pos = buf.find(b"</row>", gt_pos + 1)
+                close_len = 6
+                if close_pos == -1:
+                    m_xclose = re.search(rb"</[A-Za-z0-9_]+:row>", buf[gt_pos + 1 :])
+                    if m_xclose:
+                        close_pos = gt_pos + 1 + m_xclose.start()
+                        close_len = m_xclose.end() - m_xclose.start()
+                while close_pos == -1:
+                    if not _refill():
+                        break
+                    close_pos = buf.find(b"</row>", gt_pos + 1)
+                    close_len = 6
+                    if close_pos == -1:
+                        m_xclose = re.search(rb"</[A-Za-z0-9_]+:row>", buf[gt_pos + 1 :])
+                        if m_xclose:
+                            close_pos = gt_pos + 1 + m_xclose.start()
+                            close_len = m_xclose.end() - m_xclose.start()
+                if close_pos == -1:
+                    break
+                row_end = close_pos + close_len
+
+            m_rnum = _RE_ROW_NUM.search(open_tag)
+            rnum = int(m_rnum.group(1)) if m_rnum else 0
+            if rnum <= max_row:
+                row_bytes = buf[:row_end]
+                # If a single row is bloated (>15KB from formatting 16,384 empty cols), strip empty far cells
+                if len(row_bytes) > 15000:
+                    row_bytes = _RE_EMPTY_FAR_CELL.sub(b"", row_bytes)
+                out.extend(row_bytes)
+            buf = buf[row_end:]
+            continue
+
+        # state == "AFTER": stream-copy remaining bytes verbatim (preserves autoFilter, drawings/charts, tables!)
+        if buf:
+            out.extend(buf)
+            buf = b""
+        if not _refill():
+            break
+
+    return bytes(out)
+
+
+def _sanitize_bloated_xlsx_if_needed(src_path: str | Path) -> tuple[Path, Path | None]:
+    """
+    If an .xlsx contains bloated worksheet XML (>1.5 MB uncompressed, e.g. Ctrl+A formatted 1M empty rows)
+    or giant embedded photos (>2 MB), produce a lightweight sanitized temp .xlsx so openpyxl never OOMs.
+    Returns (path_to_open, temp_path_to_delete_or_None).
+    """
+    p = Path(src_path)
+    if p.suffix.lower() not in {".xlsx", ".xlsm"}:
+        return p, None
+
+    try:
+        with zipfile.ZipFile(p, "r") as zf:
+            infos = zf.infolist()
+            needs_trim = any(
+                (
+                    info.filename.lower().startswith("xl/worksheets/sheet")
+                    and info.filename.lower().endswith(".xml")
+                    and info.file_size > _BLOATED_SHEET_XML_BYTES
+                )
+                or (
+                    info.filename.lower().startswith("xl/media/")
+                    and info.file_size > _BLOATED_MEDIA_BYTES
+                )
+                for info in infos
+            )
+            if not needs_trim:
+                return p, None
+
+            tmp_fd, tmp_name = tempfile.mkstemp(prefix="eag_trim_", suffix=".xlsx")
+            os.close(tmp_fd)
+            tmp_path = Path(tmp_name)
+
+            with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+                for info in infos:
+                    lname = info.filename.lower()
+                    if lname.startswith("xl/media/") and info.file_size > _BLOATED_MEDIA_BYTES:
+                        continue
+                    if lname.startswith("xl/worksheets/sheet") and lname.endswith(".xml") and info.file_size > _BLOATED_SHEET_XML_BYTES:
+                        with zf.open(info, "r") as zstream:
+                            trimmed = _trim_bloated_sheet_xml(zstream)
+                        zout.writestr(info.filename, trimmed)
+                    else:
+                        zout.writestr(info.filename, zf.read(info.filename))
+
+            return tmp_path, tmp_path
+    except Exception:
+        return p, None
+
+
 def load_workbooks(
     formula_file_path: str | Path,
     value_file_path: str | Path | None = None,
@@ -134,23 +314,35 @@ def load_workbooks(
     """
     Open the Excel workbook for formula inspection (data_only=False)
     and/or value inspection (data_only=True).
-    When only one mode is needed (e.g. chart-only or formula-only rubrics),
-    avoids opening and XML-parsing the entire workbook twice (~2x faster).
+    Automatically stream-trims bloated worksheet XML (e.g. 1M empty formatted rows)
+    so openpyxl never OOM-crashes on Render 512MB RAM!
     """
     val_path = value_file_path or formula_file_path
+    same_path = str(Path(val_path).resolve()) == str(Path(formula_file_path).resolve())
+    tmp_files: list[Path] = []
     try:
+        open_f_path, tmp_f = _sanitize_bloated_xlsx_if_needed(formula_file_path)
+        if tmp_f:
+            tmp_files.append(tmp_f)
+        if same_path:
+            open_v_path = open_f_path
+        else:
+            open_v_path, tmp_v = _sanitize_bloated_xlsx_if_needed(val_path)
+            if tmp_v:
+                tmp_files.append(tmp_v)
+
         formula_wb: Workbook | None = None
         value_wb: Workbook | None = None
 
         if load_formula:
             formula_wb = openpyxl.load_workbook(
-                formula_file_path,
+                open_f_path,
                 data_only=False,
                 keep_vba=False,
             )
         if load_value:
             value_wb = openpyxl.load_workbook(
-                val_path,
+                open_v_path,
                 data_only=True,
                 keep_vba=False,
             )
@@ -160,7 +352,7 @@ def load_workbooks(
         elif value_wb is None and formula_wb is not None:
             value_wb = formula_wb
         elif formula_wb is None and value_wb is None:
-            formula_wb = openpyxl.load_workbook(formula_file_path, data_only=False, keep_vba=False)
+            formula_wb = openpyxl.load_workbook(open_f_path, data_only=False, keep_vba=False)
             value_wb = formula_wb
 
         return LoadedWorkbooks(formula_wb=formula_wb, value_wb=value_wb)
@@ -168,6 +360,12 @@ def load_workbooks(
         raise CorruptedExcelError(
             f"ไม่สามารถเปิดอ่านไฟล์ Excel ได้ (ไฟล์อาจเสียหายหรือติดรหัสผ่าน): {exc}"
         ) from exc
+    finally:
+        for tf in tmp_files:
+            try:
+                tf.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def extract_workbook_metadata(file_path: str | Path) -> dict[str, Any]:
