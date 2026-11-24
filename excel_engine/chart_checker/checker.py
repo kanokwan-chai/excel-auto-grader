@@ -77,14 +77,17 @@ def check_chart_item(
     - y_axis_title: str
     - min_series_count: int
     """
+    from excel_engine.readers.excel_reader import resolve_worksheet_forgiving
+
     cfg = item.rule_config or {}
-    sheet_name = item.sheet_name or (student_wb.sheetnames[0] if student_wb.sheetnames else None)
-    if not sheet_name or sheet_name not in student_wb.sheetnames:
+    ws, sheet_name = resolve_worksheet_forgiving(student_wb, item.sheet_name)
+    # If target sheet has no charts, also check if any other sheet has charts (in case student placed chart on a Chart sheet!)
+    if ws is None:
         err = GradingErrorRecord(
             error_code="MISSING_WORKSHEET",
             severity="error",
-            sheet_name=sheet_name,
-            message_th=f"ไม่พบ Worksheet '{sheet_name}' สำหรับตรวจแผนภูมิ",
+            sheet_name=item.sheet_name,
+            message_th=f"ไม่พบ Worksheet '{item.sheet_name}' สำหรับตรวจแผนภูมิ",
         )
         return RubricItemResult(
             rubric_item_id=item.id,
@@ -98,8 +101,15 @@ def check_chart_item(
             errors=[err],
         )
 
-    ws = student_wb[sheet_name]
     charts = list(getattr(ws, "_charts", []) or [])
+    if not charts:
+        for alt_name in student_wb.sheetnames:
+            alt_charts = list(getattr(student_wb[alt_name], "_charts", []) or [])
+            if alt_charts:
+                ws = student_wb[alt_name]
+                sheet_name = alt_name
+                charts = alt_charts
+                break
 
     if not charts:
         err = GradingErrorRecord(

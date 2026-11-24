@@ -43,19 +43,22 @@ def check_formula_item(
     - min_nested_if_depth: int (e.g. 2 for nested IF)
     - require_cross_sheet: str | None (expected referenced sheet name)
     """
-    cfg: dict[str, Any] = item.rule_config or {}
-    sheet_name = item.sheet_name or (student_formula_wb.sheetnames[0] if student_formula_wb.sheetnames else None)
+    from excel_engine.readers.excel_reader import resolve_worksheet_forgiving
 
-    if not sheet_name or sheet_name not in student_formula_wb.sheetnames:
+    cfg: dict[str, Any] = item.rule_config or {}
+    ws, resolved_sheet = resolve_worksheet_forgiving(student_formula_wb, item.sheet_name, reference_formula_wb)
+    sheet_name = resolved_sheet
+
+    if ws is None:
         err = GradingErrorRecord(
             error_code="MISSING_WORKSHEET",
             severity="error",
-            sheet_name=sheet_name,
+            sheet_name=item.sheet_name,
             cell_reference=item.target_cell,
-            message_th=f"ไม่พบ Worksheet ชื่อ '{sheet_name}' ในไฟล์ของนักเรียน",
-            expected_detail=f"Worksheet '{sheet_name}'",
+            message_th=f"ไม่พบ Worksheet ชื่อ '{item.sheet_name}' ในไฟล์ของนักเรียน",
+            expected_detail=f"Worksheet '{item.sheet_name}'",
             actual_detail=", ".join(student_formula_wb.sheetnames),
-            fix_suggestion_th=f"ตรวจสอบชื่อแผ่นงานให้ตรงกับ '{sheet_name}'",
+            fix_suggestion_th=f"ตรวจสอบชื่อแผ่นงานให้ตรงกับ '{item.sheet_name}'",
         )
         return RubricItemResult(
             rubric_item_id=item.id,
@@ -71,12 +74,9 @@ def check_formula_item(
             errors=[err],
         )
 
-    ws = student_formula_wb[sheet_name]
-    ref_ws = (
-        reference_formula_wb[sheet_name]
-        if (reference_formula_wb is not None and sheet_name in reference_formula_wb.sheetnames)
-        else None
-    )
+    ref_ws = None
+    if reference_formula_wb is not None:
+        ref_ws, _ = resolve_worksheet_forgiving(reference_formula_wb, item.sheet_name or sheet_name)
 
     if not item.target_cell:
         return _check_formula_auto_detect(

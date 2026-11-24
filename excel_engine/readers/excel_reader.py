@@ -15,6 +15,92 @@ from excel_engine.exceptions import CorruptedExcelError
 from excel_engine.formula_checker.normalizer import analyze_formula
 
 
+def resolve_worksheet_forgiving(
+    wb: Workbook,
+    requested_name: str | None,
+    reference_wb: Workbook | None = None,
+) -> tuple[Any | None, str]:
+    """
+    Forgiving worksheet resolver for student workbooks.
+    Handles common Thai/English student typos ('ขแ5' for 'ข้อ 5', 'คะเเนน' for 'คะแนน',
+    extra spaces/dots, default 'Sheet1' on single-sheet workbooks, or matching tab position).
+    Returns (worksheet_or_None, resolved_sheet_name).
+    """
+    import difflib
+    import unicodedata
+
+    names = list(wb.sheetnames)
+    if not names:
+        return None, requested_name or ""
+
+    # 1) If workbook has only 1 sheet, always forgive sheet naming!
+    if len(names) == 1:
+        return wb[names[0]], names[0]
+
+    if not requested_name or not requested_name.strip():
+        return wb[names[0]], names[0]
+
+    req = requested_name.strip()
+    if req in wb.sheetnames:
+        return wb[req], req
+
+    def _norm_th(s: str) -> str:
+        t = unicodedata.normalize("NFC", s).replace("เเ", "แ")
+        t = re.sub(r"[\s._\-()/:]+", "", t).lower()
+        return t
+
+    norm_req = _norm_th(req)
+    # 2) Normalized exact / substring match
+    for n in names:
+        if _norm_th(n) == norm_req:
+            return wb[n], n
+    for n in names:
+        nn = _norm_th(n)
+        if norm_req and nn and (norm_req in nn or nn in norm_req):
+            return wb[n], n
+
+    # 3) Exercise/Tab number match: e.g. 'ข้อที่ 5' matches 'ขแ5', 'ขเอ 5', 'ขอ5', '5', 'Sheet5'
+    nums = re.findall(r"\d+", req)
+    if nums:
+        target_num = nums[-1]
+        num_candidates = [
+            n for n in names if re.search(rf"(?<!\d){re.escape(target_num)}(?!\d)", n)
+        ]
+        if len(num_candidates) == 1:
+            return wb[num_candidates[0]], num_candidates[0]
+        if len(num_candidates) > 1:
+            best_c = max(
+                num_candidates,
+                key=lambda cand: difflib.SequenceMatcher(None, norm_req, _norm_th(cand)).ratio(),
+            )
+            return wb[best_c], best_c
+
+    # 4) Same tab position as reference workbook when sheet counts match
+    if reference_wb is not None and req in reference_wb.sheetnames:
+        ref_idx = list(reference_wb.sheetnames).index(req)
+        if len(names) == len(reference_wb.sheetnames) and 0 <= ref_idx < len(names):
+            return wb[names[ref_idx]], names[ref_idx]
+
+    # 5) Fuzzy string similarity for general Thai/English typos (e.g. 'สรุปผบ' vs 'สรุปผล')
+    best_name = None
+    best_score = 0.0
+    for n in names:
+        score = difflib.SequenceMatcher(None, norm_req, _norm_th(n)).ratio()
+        if score > best_score:
+            best_score = score
+            best_name = n
+    if best_name and best_score >= 0.48:
+        return wb[best_name], best_name
+
+    # 6) Number-to-tab-order fallback (e.g. 'ข้อ 3' -> 3rd tab)
+    if nums:
+        idx = int(nums[-1]) - 1
+        if 0 <= idx < len(names):
+            return wb[names[idx]], names[idx]
+
+    return None, req
+
+
 @dataclass
 class LoadedWorkbooks:
     formula_wb: Workbook

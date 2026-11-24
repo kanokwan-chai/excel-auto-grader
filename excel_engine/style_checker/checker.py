@@ -30,12 +30,12 @@ def check_style_item(
     Verifies neat borders, bold headers, merged cells, alignment, and number formats
     against the reference workbook — while allowing ANY decorative color chosen by the student.
     """
-    cfg = item.rule_config or {}
-    sheet_name = item.sheet_name or (student_wb.sheetnames[0] if student_wb.sheetnames else None)
-    if not sheet_name or sheet_name not in student_wb.sheetnames:
-        return _missing_sheet_result(item, sheet_name)
+    from excel_engine.readers.excel_reader import resolve_worksheet_forgiving
 
-    ws = student_wb[sheet_name]
+    cfg = item.rule_config or {}
+    ws, sheet_name = resolve_worksheet_forgiving(student_wb, item.sheet_name, reference_wb)
+    if ws is None:
+        return _missing_sheet_result(item, item.sheet_name)
 
     # Auto aesthetics comparison against reference template (color-agnostic!)
     if cfg.get("match_reference_layout_ignore_color") or (not cfg and reference_wb is not None):
@@ -618,12 +618,12 @@ def check_position_item(
     reference_value_wb: Workbook | None = None,
 ) -> RubricItemResult:
     """Check that required cells contain data at exact positions (not shifted/missing)."""
-    cfg = item.rule_config or {}
-    sheet_name = item.sheet_name or (student_value_wb.sheetnames[0] if student_value_wb.sheetnames else None)
-    if not sheet_name or sheet_name not in student_value_wb.sheetnames:
-        return _missing_sheet_result(item, sheet_name)
+    from excel_engine.readers.excel_reader import resolve_worksheet_forgiving
 
-    ws = student_value_wb[sheet_name]
+    cfg = item.rule_config or {}
+    ws, sheet_name = resolve_worksheet_forgiving(student_value_wb, item.sheet_name, reference_value_wb)
+    if ws is None:
+        return _missing_sheet_result(item, item.sheet_name)
     expected_cells: dict[str, Any] = cfg.get("expected_cells", {})
     required_non_empty: list[str] = cfg.get("required_non_empty", [])
 
@@ -688,9 +688,12 @@ def check_structure_item(
     sheet_names = list(student_wb.sheetnames)
 
     if "required_sheets" in cfg:
+        from excel_engine.readers.excel_reader import resolve_worksheet_forgiving
+
         for req_name in cfg["required_sheets"]:
             total += 1
-            if req_name in sheet_names:
+            matched_ws, _ = resolve_worksheet_forgiving(student_wb, req_name)
+            if matched_ws is not None:
                 passed += 1
             else:
                 errors.append(
@@ -1052,40 +1055,10 @@ def check_structure_item(
 
 
 def _resolve_worksheet_fuzzy(wb: Workbook, requested_name: str | None) -> tuple[Any | None, str]:
-    """Find worksheet by exact name, normalized name, Thai number match ('ข้อ 1' -> 'ข้อ1'), or tab index."""
-    import re
+    """Delegate to shared forgiving worksheet resolver (handles typos like 'ขแ5' -> 'ข้อ 5')."""
+    from excel_engine.readers.excel_reader import resolve_worksheet_forgiving
 
-    names = list(wb.sheetnames)
-    if not names:
-        return None, requested_name or ""
-    if not requested_name or not requested_name.strip():
-        return wb[names[0]], names[0]
-
-    req = requested_name.strip()
-    if req in wb.sheetnames:
-        return wb[req], req
-
-    norm_req = re.sub(r"\s+", "", req).lower()
-    for n in names:
-        if re.sub(r"\s+", "", n).lower() == norm_req:
-            return wb[n], n
-    for n in names:
-        norm_n = re.sub(r"\s+", "", n).lower()
-        if norm_req in norm_n or norm_n in norm_req:
-            return wb[n], n
-
-    # Match by exercise number (e.g. "ข้อ 3" -> "ข้อที่3", "ข้อ 3", "ข้อ3", or 3rd tab)
-    m_num = re.search(r"(\d+)", req)
-    if m_num:
-        num_str = m_num.group(1)
-        for n in names:
-            if re.search(rf"(?:ข้อ(?:ที่)?\s*|sheet\s*|^){num_str}(?:\D|$)", n, re.IGNORECASE):
-                return wb[n], n
-        idx = int(num_str) - 1
-        if 0 <= idx < len(names):
-            return wb[names[idx]], names[idx]
-
-    return None, req
+    return resolve_worksheet_forgiving(wb, requested_name)
 
 
 def _inspect_worksheet_autofilter(ws: Any) -> tuple[str | None, bool]:
@@ -1359,12 +1332,12 @@ def check_completeness_item(
     student_value_wb: Workbook,
 ) -> RubricItemResult:
     """Check completeness: min_rows, required_headers, sorted_column."""
-    cfg = item.rule_config or {}
-    sheet_name = item.sheet_name or (student_value_wb.sheetnames[0] if student_value_wb.sheetnames else None)
-    if not sheet_name or sheet_name not in student_value_wb.sheetnames:
-        return _missing_sheet_result(item, sheet_name)
+    from excel_engine.readers.excel_reader import resolve_worksheet_forgiving
 
-    ws = student_value_wb[sheet_name]
+    cfg = item.rule_config or {}
+    ws, sheet_name = resolve_worksheet_forgiving(student_value_wb, item.sheet_name)
+    if ws is None:
+        return _missing_sheet_result(item, item.sheet_name)
     total = 0
     passed = 0
     errors: list[GradingErrorRecord] = []
