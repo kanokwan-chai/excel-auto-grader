@@ -147,7 +147,7 @@ export default function ReportsPage() {
 
     setRegrading(true);
     setRegradeProgress(null);
-    const BATCH_SIZE = 5;
+    const BATCH_SIZE = 3;
     let done = 0;
     try {
       if (subIds.length > 0) {

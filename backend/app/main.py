@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from backend.app.api import (
     assignments,
@@ -52,6 +53,20 @@ app.include_router(grading.router, prefix=API_PREFIX)
 app.include_router(google_accounts.router, prefix=API_PREFIX)
 app.include_router(classroom.router, prefix=API_PREFIX)
 app.include_router(reports.router, prefix=API_PREFIX)
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Ensure unexpected 500 errors still pass through CORSMiddleware with a clear Thai message."""
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"เซิร์ฟเวอร์เกิดข้อผิดพลาดขณะประมวลผล: {type(exc).__name__}: {exc}"},
+    )
+
+
+@app.get("/ping")
+def lightweight_ping():
+    return {"ok": True}
 
 
 @app.get("/health")

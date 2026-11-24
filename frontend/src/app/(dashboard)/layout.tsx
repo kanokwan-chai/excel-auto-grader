@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { Sidebar } from "@/components/layout/sidebar";
 import { useAuth } from "@/hooks/use-auth";
+import { wakeUpBackend } from "@/lib/api";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { teacher, loading } = useAuth();
@@ -15,6 +16,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       router.replace("/login");
     }
   }, [teacher, loading, router]);
+
+  // Keep backend warm every 4 minutes while dashboard is open
+  useEffect(() => {
+    const timer = setInterval(() => wakeUpBackend(), 4 * 60 * 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   if (loading || !teacher) {
     return (

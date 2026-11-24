@@ -26,11 +26,11 @@ export function setSessionToken(token: string | null): void {
   }
 }
 
-/** Fire-and-forget ping to wake up Render Free Tier backend as soon as user opens the site. */
+/** Fire-and-forget ping to keep Render backend warm continuously. */
 export function wakeUpBackend(): void {
   if (typeof window === "undefined") return;
-  fetch(`${BACKEND_ROOT_URL}/health`, { method: "GET", cache: "no-store" }).catch(() => {
-    // ignore wake-up errors silently
+  fetch(`${BACKEND_ROOT_URL}/ping`, { method: "GET", cache: "no-store" }).catch(() => {
+    fetch(`${BACKEND_ROOT_URL}/health`, { method: "GET", cache: "no-store" }).catch(() => {});
   });
 }
 
@@ -59,7 +59,7 @@ export async function apiRequest<T>(
 
   const method = (options.method || "GET").toUpperCase();
   const isSafeToRetry = method === "GET" || path.startsWith("/auth/");
-  const retryDelays = isSafeToRetry ? [2500, 5000, 8000] : [3000, 6000];
+  const retryDelays = isSafeToRetry ? [2000, 4000, 7000, 10000] : [2500, 5000, 8000];
 
   let res: Response | null = null;
   for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
