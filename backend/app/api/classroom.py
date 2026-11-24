@@ -785,10 +785,12 @@ async def run_classroom_wizard_grading(
 
     graded_results = []
     failed = 0
+    failed_details: list[dict[str, str]] = []
     for csid in c_sub_ids:
         cs = db.query(ClassroomSubmission).filter(ClassroomSubmission.id == csid).first()
         if not cs or not cs.selected_drive_file_id:
             continue
+        student_label = cs.student_name or "นักเรียน"
         chosen_att = next(
             (a for a in (cs.attachments or []) if a.get("drive_file_id") == cs.selected_drive_file_id),
             None,
@@ -797,6 +799,12 @@ async def run_classroom_wizard_grading(
         dl_res = downloaded_map.pop(cs.selected_drive_file_id, None)
         if not dl_res or isinstance(dl_res, Exception):
             failed += 1
+            reason_txt = (
+                dl_res.message
+                if isinstance(dl_res, GoogleAPIError)
+                else (str(dl_res) if isinstance(dl_res, Exception) else "ดาวน์โหลดไฟล์จาก Google Drive ไม่สำเร็จ")
+            )
+            failed_details.append({"student_name": student_label, "reason": reason_txt})
             continue
         content, ext = dl_res
 
@@ -872,8 +880,11 @@ async def run_classroom_wizard_grading(
             graded_results.append(res.id)
             if res.status == "error":
                 failed += 1
-        except Exception:
+                err_msg = res.teacher_comment or (res.errors[0].message_th if res.errors else "ไฟล์ไม่สามารถเปิดตรวจได้")
+                failed_details.append({"student_name": student_label, "reason": err_msg})
+        except Exception as exc:
             failed += 1
+            failed_details.append({"student_name": student_label, "reason": f"{type(exc).__name__}: {exc}"})
             db.rollback()
             gc.collect()
 
@@ -896,6 +907,7 @@ async def run_classroom_wizard_grading(
         "assignment_id": local_assign_id_str,
         "graded_count": len(graded_results),
         "failed_count": failed,
+        "failed_details": failed_details,
         "result_ids": graded_results,
     }
 

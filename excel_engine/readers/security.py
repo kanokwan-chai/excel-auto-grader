@@ -14,9 +14,9 @@ ALLOWED_EXTENSIONS = {".xlsx", ".xls", ".xlsm"}
 ZIP_MAGIC = b"PK\x03\x04"
 OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
-MAX_UNCOMPRESSED_BYTES = 150 * 1024 * 1024  # 150 MB uncompressed limit
-MAX_COMPRESSION_RATIO = 100.0
-MAX_ZIP_ENTRIES = 5000
+MAX_UNCOMPRESSED_BYTES = 350 * 1024 * 1024  # 350 MB uncompressed limit
+MAX_COMPRESSION_RATIO = 500.0
+MAX_ZIP_ENTRIES = 10000
 
 
 def compute_sha256(file_path: str | Path) -> str:
@@ -29,7 +29,7 @@ def compute_sha256(file_path: str | Path) -> str:
 
 def validate_excel_file(
     file_path: str | Path,
-    max_file_size_mb: int = 15,
+    max_file_size_mb: int = 50,
     allowed_extensions: set[str] | None = None,
 ) -> FileSecurityReport:
     path = Path(file_path)
@@ -88,7 +88,7 @@ def validate_excel_file(
                     total_uncompressed += info.file_size
                     if info.compress_size > 0:
                         ratio = info.file_size / info.compress_size
-                        if ratio > MAX_COMPRESSION_RATIO and info.file_size > 5 * 1024 * 1024:
+                        if ratio > MAX_COMPRESSION_RATIO and info.file_size > 30 * 1024 * 1024:
                             raise FileSecurityError(
                                 "ตรวจพบอัตราการบีบอัดผิดปกติ (สงสัย Zip Bomb)",
                                 code="ZIP_BOMB_RATIO",

@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/google-accounts/callback"
 
     LIBREOFFICE_BIN: str = "soffice"
-    EXCEL_MAX_FILE_SIZE_MB: int = 15
+    EXCEL_MAX_FILE_SIZE_MB: int = 50
     EXCEL_RECALC_TIMEOUT_SECONDS: int = 30
     LOCAL_STORAGE_DIR: str = "./storage_data"
 

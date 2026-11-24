@@ -67,6 +67,7 @@ export default function GoogleClassroomWizardPage() {
     assignment_id: string;
     graded_count: number;
     failed_count: number;
+    failed_details?: { student_name: string; reason: string }[];
   } | null>(null);
 
   const [recentJobs, setRecentJobs] = useState<
@@ -213,6 +214,7 @@ export default function GoogleClassroomWizardPage() {
     let totalFailed = 0;
     let lastJobId = "";
     let lastAssignId = "";
+    const allFailedDetails: { student_name: string; reason: string }[] = [];
 
     const gradeChunk = async (chunkIds: string[]) =>
       apiRequest<{
@@ -220,6 +222,7 @@ export default function GoogleClassroomWizardPage() {
         assignment_id: string;
         graded_count: number;
         failed_count: number;
+        failed_details?: { student_name: string; reason: string }[];
       }>("/classroom/wizard/grade", {
         method: "POST",
         body: JSON.stringify({
@@ -244,22 +247,29 @@ export default function GoogleClassroomWizardPage() {
           const res = await gradeChunk(chunk);
           totalGraded += res.graded_count;
           totalFailed += res.failed_count;
+          if (res.failed_details) allFailedDetails.push(...res.failed_details);
           lastJobId = res.job_id;
           lastAssignId = res.assignment_id;
         } catch {
-          // If a 3-student batch hits memory/timeout (e.g. 1 oversized file), automatically retry 1-by-1
+          // If a 3-student batch hits memory/timeout, automatically retry 1-by-1
           for (const singleId of chunk) {
+            const stuObj = submissions.find((s) => s.id === singleId);
             setBatchProgress(
-              `กำลังตรวจแยกทีละไฟล์เพื่อป้องกันไฟล์ใหญ่ค้าง (เสร็จแล้ว ${totalGraded}/${targetIds.length} คน)...`
+              `กำลังตรวจแยกทีละไฟล์: ${stuObj?.student_name || ""} (เสร็จแล้ว ${totalGraded}/${targetIds.length} คน)...`
             );
             try {
               const singleRes = await gradeChunk([singleId]);
               totalGraded += singleRes.graded_count;
               totalFailed += singleRes.failed_count;
+              if (singleRes.failed_details) allFailedDetails.push(...singleRes.failed_details);
               lastJobId = singleRes.job_id;
               lastAssignId = singleRes.assignment_id;
-            } catch {
+            } catch (singleErr) {
               totalFailed += 1;
+              allFailedDetails.push({
+                student_name: stuObj?.student_name || singleId,
+                reason: singleErr instanceof Error ? singleErr.message : "เซิร์ฟเวอร์ประมวลผลไฟล์นี้ไม่สำเร็จ",
+              });
             }
           }
         }
@@ -269,11 +279,13 @@ export default function GoogleClassroomWizardPage() {
         assignment_id: lastAssignId,
         graded_count: totalGraded,
         failed_count: totalFailed,
+        failed_details: allFailedDetails,
       });
       toast(
         totalFailed > 0
-          ? `ตรวจงานเสร็จสิ้น ${totalGraded} ไฟล์ (มีไฟล์เปิดไม่ได้/ใหญ่เกิน ${totalFailed} ไฟล์)`
-          : `ตรวจงานเสร็จสิ้น ${totalGraded} ไฟล์`
+          ? `ตรวจงานเสร็จสิ้น ${totalGraded} ไฟล์ (พบปัญหา ${totalFailed} ไฟล์ — ดูสาเหตุละเอียดด้านล่าง)`
+          : `ตรวจงานเสร็จสิ้น ${totalGraded} ไฟล์ ✨`,
+        totalFailed > 0 ? "info" : "success"
       );
       setStep(8);
     } catch (err) {
@@ -828,11 +840,31 @@ export default function GoogleClassroomWizardPage() {
               ตรวจสำเร็จ {gradingResult.graded_count} ไฟล์ • พบปัญหา {gradingResult.failed_count} ไฟล์
             </p>
           </div>
+          {gradingResult.failed_details && gradingResult.failed_details.length > 0 && (
+            <div className="mx-auto max-w-2xl rounded-2xl border border-rose-200 bg-rose-50/70 p-4 text-left text-xs space-y-1.5">
+              <p className="font-bold text-rose-900">
+                รายชื่อไฟล์ที่ตรวจไม่สำเร็จ ({gradingResult.failed_details.length} คน) พร้อมสาเหตุจริง:
+              </p>
+              <div className="max-h-44 overflow-y-auto space-y-1">
+                {gradingResult.failed_details.map((fd, idx) => (
+                  <div key={idx} className="rounded-xl bg-white px-3 py-1.5 border border-rose-100 text-rose-950">
+                    <strong>{fd.student_name}:</strong> {fd.reason}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="flex justify-center gap-3">
             <Button variant="outline" onClick={() => setStep(1)}>
               ตรวจงานอื่นต่อ
             </Button>
-            <Link href="/reports">
+            <Link
+              href={
+                gradingResult.assignment_id
+                  ? `/reports?assignment_id=${encodeURIComponent(gradingResult.assignment_id)}`
+                  : "/reports"
+              }
+            >
               <Button size="lg">ดูคะแนนและรายงานละเอียด</Button>
             </Link>
           </div>
