@@ -44,6 +44,13 @@ def resolve_worksheet_forgiving(
     if req in wb.sheetnames:
         return wb[req], req
 
+    # Explicit physical tab position syntax: 'แท็บ 2', 'แท็บที่ 2', 'แผ่นที่ 2', 'Tab 2' -> 2nd tab (index 1)
+    m_pos = re.match(r"^(?:แท็บ(?:ที่)?|แผ่น(?:งาน)?ที่|tab)\s*(\d+)$", req, re.IGNORECASE)
+    if m_pos:
+        pos_idx = int(m_pos.group(1)) - 1
+        if 0 <= pos_idx < len(names):
+            return wb[names[pos_idx]], names[pos_idx]
+
     def _norm_th(s: str) -> str:
         t = unicodedata.normalize("NFC", s).replace("เเ", "แ")
         t = re.sub(r"[\s._\-()/:]+", "", t).lower()
