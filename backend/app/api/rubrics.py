@@ -913,37 +913,29 @@ async def inspect_sample_excel_for_rubric(
             })
             idx += 1
 
-        # 3) Chart & Chart Elements Ground-Truth Rules from Answer Key!
-        for ch in sheet.get("charts", []):
-            ch_cfg: dict[str, Any] = {"chart_type": ch.get("type") or "column"}
-            if ch.get("title"):
+        # 3) Chart & Chart Elements Ground-Truth Rules from Answer Key (forgiving on wording!)
+        for ch_idx, ch in enumerate(sheet.get("charts", []), start=1):
+            ch_cfg: dict[str, Any] = {"chart_type": ch.get("type") or "bar_or_column"}
+            # Require presence of title/elements that exist in Answer Key WITHOUT locking exact wording!
+            if ch.get("has_title") and str(ch.get("title") or "").lower() not in {"", "chart title", "ชื่อแผนภูมิ"}:
                 ch_cfg["require_title"] = True
-                ch_cfg["expected_title"] = ch["title"]
-            elif ch.get("has_title"):
-                ch_cfg["require_title"] = True
-            if ch.get("has_x_axis_title"):
+            if ch.get("has_x_axis_title") and str(ch.get("x_axis_title") or "").lower() not in {"", "axis title", "ชื่อแกน"}:
                 ch_cfg["require_x_axis_title"] = True
-                if ch.get("x_axis_title"):
-                    ch_cfg["x_axis_title"] = ch["x_axis_title"]
-            if ch.get("has_y_axis_title"):
+            if ch.get("has_y_axis_title") and str(ch.get("y_axis_title") or "").lower() not in {"", "axis title", "ชื่อแกน"}:
                 ch_cfg["require_y_axis_title"] = True
-                if ch.get("y_axis_title"):
-                    ch_cfg["y_axis_title"] = ch["y_axis_title"]
             if ch.get("has_percent_labels"):
                 ch_cfg["require_percent_labels"] = True
             elif ch.get("has_data_labels"):
                 ch_cfg["require_data_labels"] = True
-            if ch.get("has_legend"):
+            if ch.get("has_legend") and int(ch.get("series_count") or 0) > 1:
                 ch_cfg["require_legend"] = True
             if ch.get("has_data_table"):
                 ch_cfg["require_data_table"] = True
-            if int(ch.get("series_count") or 0) > 1:
-                ch_cfg["min_series_count"] = int(ch["series_count"])
 
             suggested_items.append({
                 "order_index": idx,
-                "title": f"ตรวจแผนภูมิและองค์ประกอบ ({ch.get('title') or ch.get('type')}) แท็บ {sname}",
-                "description": "ตรวจสอบประเภทแผนภูมิและองค์ประกอบครบตามไฟล์เฉลย",
+                "title": f"ตรวจแผนภูมิที่ {ch_idx}: {ch.get('title') or ch.get('type')} (แท็บ {sname})",
+                "description": "ตรวจสอบประเภทแผนภูมิและองค์ประกอบตามเฉลย (ยืดหยุ่นข้อความชื่อกราฟ/ชื่อแกน)",
                 "category": "chart",
                 "sheet_name": sname,
                 "target_cell": "",

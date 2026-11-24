@@ -274,7 +274,7 @@ def extract_workbook_metadata(file_path: str | Path) -> dict[str, Any]:
             from excel_engine.chart_checker.checker import inspect_chart_elements_summary
 
             charts = [
-                inspect_chart_elements_summary(ch)
+                inspect_chart_elements_summary(ch, wb=loaded.value_wb)
                 for ch in getattr(f_ws, "_charts", [])
             ]
 
