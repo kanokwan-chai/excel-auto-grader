@@ -934,9 +934,27 @@ def check_structure_item(
                             reason_parts.append("ยังไม่ได้กรองข้อมูล (ยังคงแสดงครบทุกแถว)")
                         else:
                             if wrongly_visible:
-                                reason_parts.append(f"มีแถวที่ไม่ตรงเงื่อนไขแสดงเกินมา {len(wrongly_visible)} แถว")
+                                sample_r = sorted(wrongly_visible)[0]
+                                sample_vals = ", ".join(
+                                    f"{str(val_ws.cell(row=header_row, column=c_i).value or c_i).strip()}="
+                                    f"'{val_ws.cell(row=sample_r, column=c_i).value if val_ws.cell(row=sample_r, column=c_i).value is not None else ws.cell(row=sample_r, column=c_i).value}'"
+                                    for c_i, _ in cond_evals
+                                    if c_i is not None
+                                )
+                                reason_parts.append(
+                                    f"มีแถวที่ไม่ตรงเงื่อนไขแสดงเกินมา {len(wrongly_visible)} แถว (เช่น แถว {sample_r}: {sample_vals})"
+                                )
                             if wrongly_hidden:
-                                reason_parts.append(f"มีแถวที่ตรงเงื่อนไขถูกซ่อนหายไป {len(wrongly_hidden)} แถว")
+                                sample_h = sorted(wrongly_hidden)[0]
+                                sample_h_vals = ", ".join(
+                                    f"{str(val_ws.cell(row=header_row, column=c_i).value or c_i).strip()}="
+                                    f"'{val_ws.cell(row=sample_h, column=c_i).value if val_ws.cell(row=sample_h, column=c_i).value is not None else ws.cell(row=sample_h, column=c_i).value}'"
+                                    for c_i, _ in cond_evals
+                                    if c_i is not None
+                                )
+                                reason_parts.append(
+                                    f"มีแถวที่ตรงเงื่อนไขถูกซ่อนหายไป {len(wrongly_hidden)} แถว (เช่น แถว {sample_h}: {sample_h_vals})"
+                                )
                         cond_desc = " และ ".join(_format_filter_condition_th(c) for c in conditions)
                         errors.append(
                             GradingErrorRecord(
@@ -1009,18 +1027,40 @@ def _inspect_worksheet_autofilter(ws: Any) -> tuple[str | None, bool]:
     return None, False
 
 
+def _clean_text_nfc(v: Any) -> str:
+    import unicodedata
+
+    if v is None:
+        return ""
+    s = unicodedata.normalize("NFC", str(v))
+    s = s.replace("\u200b", "").replace("\ufeff", "").replace("\xa0", " ")
+    return s.strip().strip("`\"'“”‘’").strip()
+
+
+def _norm_header_key(v: Any) -> str:
+    import re
+
+    s = _clean_text_nfc(v).lower()
+    return re.sub(r"[\s()/\-_:,.]+", "", s)
+
+
 def _find_table_header_and_data_rows(ws: Any, cfg: dict[str, Any], af_ref: str | None) -> tuple[int, list[int]]:
-    """Detect header row and all non-empty data row indices below it."""
+    """Detect header row and all non-empty data row indices within the filtered table."""
     import re
 
     header_row: int | None = int(cfg["header_row"]) if cfg.get("header_row") else None
     max_r = min(ws.max_row or 0, 2000)
     max_c = min(ws.max_column or 0, 50)
+    af_end_row: int | None = None
 
-    if header_row is None and af_ref:
-        m = re.match(r"^[A-Za-z]+(\d+):[A-Za-z]+(\d+)$", af_ref.replace("$", ""))
+    if af_ref:
+        m = re.match(r"^[A-Za-z]+(\d+):[A-Za-z]+(\d+)$", af_ref.replace("$", "").strip())
         if m:
-            header_row = int(m.group(1))
+            if header_row is None:
+                header_row = int(m.group(1))
+            parsed_end = int(m.group(2))
+            if header_row is not None and parsed_end > header_row:
+                af_end_row = parsed_end
 
     if header_row is None:
         for r in range(1, min(max_r, 10) + 1):
@@ -1031,9 +1071,10 @@ def _find_table_header_and_data_rows(ws: Any, cfg: dict[str, Any], af_ref: str |
         if header_row is None:
             header_row = 1
 
+    scan_end_r = min(max_r, af_end_row) if af_end_row else max_r
     data_rows: list[int] = []
-    for r in range(header_row + 1, max_r + 1):
-        if any(ws.cell(row=r, column=c).value is not None and str(ws.cell(row=r, column=c).value).strip() != "" for c in range(1, max_c + 1)):
+    for r in range(header_row + 1, scan_end_r + 1):
+        if any(ws.cell(row=r, column=c).value is not None and _clean_text_nfc(ws.cell(row=r, column=c).value) != "" for c in range(1, max_c + 1)):
             data_rows.append(r)
     return header_row, data_rows
 
@@ -1044,43 +1085,78 @@ def _resolve_filter_column_index(
     data_rows: list[int],
     cond: dict[str, Any],
 ) -> int | None:
-    """Resolve column index from letter ('C'), header text ('ยี่ห้อ'), or auto-detect from data."""
+    """Resolve column index from letter ('C'), header text ('ยี่ห้อ', 'ยอดขาย (ชิ้น)'), or smart data scan."""
     import re
     from openpyxl.utils import column_index_from_string
 
     max_c = min(ws.max_column or 0, 50)
-    col_spec = str(cond.get("column") or "").strip()
+    col_spec = _clean_text_nfc(cond.get("column") or "")
+    op = str(cond.get("operator") or "equals").lower()
+    val = cond.get("value")
+    val2 = cond.get("value2")
 
+    def _col_hits(c_idx: int) -> int:
+        return sum(
+            1
+            for r in data_rows
+            if ws.cell(row=r, column=c_idx).value is not None
+            and _eval_filter_condition(ws.cell(row=r, column=c_idx).value, op, val, val2)
+        )
+
+    matched_header_col: int | None = None
     if col_spec:
         if re.fullmatch(r"[A-Za-z]{1,2}", col_spec):
             return column_index_from_string(col_spec.upper())
 
-        spec_low = col_spec.lower()
-        # Exact header match first
-        for c in range(1, max_c + 1):
-            hv = str(ws.cell(row=header_row, column=c).value or "").strip().lower()
-            if hv == spec_low:
-                return c
-        # Substring header match
-        for c in range(1, max_c + 1):
-            hv = str(ws.cell(row=header_row, column=c).value or "").strip().lower()
-            if hv and (spec_low in hv or hv in spec_low):
-                return c
+        spec_key = _norm_header_key(col_spec)
+        # Strip unit suffix inside parens like "ยอดขาย (ชิ้น)" -> core "ยอดขาย"
+        spec_core = _norm_header_key(re.sub(r"\([^)]*\)", "", col_spec))
 
-    # Auto-detect column by scanning which column has values matching the condition
-    op = str(cond.get("operator") or "equals").lower()
-    val = cond.get("value")
-    val2 = cond.get("value2")
+        # 1) Exact normalized header match (handles spaces & parens differences like "ยอดขาย(ชิ้น)" vs "ยอดขาย (ชิ้น)")
+        for c in range(1, max_c + 1):
+            hk = _norm_header_key(ws.cell(row=header_row, column=c).value)
+            if hk and (hk == spec_key or (spec_core and hk == spec_core)):
+                matched_header_col = c
+                if _col_hits(c) > 0:
+                    return c
+
+        # 2) Substring / core keyword header match
+        if matched_header_col is None:
+            candidates: list[int] = []
+            for c in range(1, max_c + 1):
+                hk = _norm_header_key(ws.cell(row=header_row, column=c).value)
+                if not hk:
+                    continue
+                if (spec_key and (spec_key in hk or hk in spec_key)) or (spec_core and len(spec_core) >= 2 and (spec_core in hk or hk in spec_core)):
+                    candidates.append(c)
+            if candidates:
+                # Prefer candidate that actually has matching values in data_rows
+                for cand in candidates:
+                    if _col_hits(cand) > 0:
+                        return cand
+                matched_header_col = candidates[0]
+
+    # 3) For text conditions (equals/starts_with/ends_with/contains), if header guess had 0 hits across the entire table,
+    #    check if another column actually contains that exact text value!
+    if op in ("equals", "starts_with", "ends_with", "contains", "in"):
+        best_text_col = None
+        best_text_hits = 0
+        for c in range(1, max_c + 1):
+            h = _col_hits(c)
+            if h > best_text_hits:
+                best_text_hits = h
+                best_text_col = c
+        if best_text_col is not None and best_text_hits > 0:
+            return best_text_col
+
+    if matched_header_col is not None:
+        return matched_header_col
+
+    # 4) Fallback auto-detect column for numeric conditions when no column header was specified
     best_col = None
     best_hits = 0
     for c in range(1, max_c + 1):
-        hits = 0
-        for r in data_rows:
-            cell_v = ws.cell(row=r, column=c).value
-            if cell_v is None:
-                continue
-            if _eval_filter_condition(cell_v, op, val, val2):
-                hits += 1
+        hits = _col_hits(c)
         if hits > best_hits:
             best_hits = hits
             best_col = c
@@ -1093,7 +1169,7 @@ def _to_float_safe(v: Any) -> float | None:
     if isinstance(v, (int, float)):
         return float(v)
     try:
-        cleaned = str(v).strip().replace(",", "").replace("฿", "").replace("%", "")
+        cleaned = _clean_text_nfc(v).replace(",", "").replace("฿", "").replace("%", "")
         return float(cleaned)
     except (ValueError, TypeError):
         return None
@@ -1127,12 +1203,12 @@ def _eval_filter_condition(cell_val: Any, operator: str, value: Any, value2: Any
                 return False
             return min(t1, t2) <= num <= max(t1, t2)
 
-    s_cell = str(cell_val).strip().lower()
+    s_cell = _clean_text_nfc(cell_val).lower()
     if op == "in" and isinstance(value, (list, tuple, set)):
-        targets = {str(x).strip().lower() for x in value}
+        targets = {_clean_text_nfc(x).lower() for x in value}
         return s_cell in targets
 
-    s_val = str(value if value is not None else "").strip().lower()
+    s_val = _clean_text_nfc(value).lower()
     if op == "equals":
         num_c = _to_float_safe(cell_val)
         num_v = _to_float_safe(value)
