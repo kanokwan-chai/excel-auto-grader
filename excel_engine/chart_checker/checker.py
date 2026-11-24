@@ -129,16 +129,23 @@ def _extract_single_series_auto_title(chart: Any, wb: Workbook | None = None) ->
     return ""
 
 
-def _extract_chart_type(chart: Any) -> str:
-    # Unwrap composite/combo charts if needed
-    sub_charts = getattr(chart, "_charts", None)
-    if sub_charts and isinstance(sub_charts, list) and len(sub_charts) > 0:
-        return _extract_chart_type(sub_charts[0])
+def _extract_chart_type(chart: Any, _seen: set[int] | None = None) -> str:
+    seen = _seen if _seen is not None else set()
+    seen.add(id(chart))
 
     cls_name = type(chart).__name__.lower()
     mapped = CHART_TYPE_MAP.get(cls_name, cls_name)
     if mapped == "bar" and getattr(chart, "type", None) == "col":
         return "column"
+    if mapped != cls_name:
+        return mapped
+
+    # Unwrap composite/combo charts only when a sub-chart is a distinct object (openpyxl sets chart._charts = [self]!)
+    sub_charts = getattr(chart, "_charts", None)
+    if sub_charts and isinstance(sub_charts, list):
+        for sub in sub_charts:
+            if sub is not chart and id(sub) not in seen:
+                return _extract_chart_type(sub, seen)
     return mapped
 
 
@@ -146,7 +153,8 @@ def _extract_series_ranges(chart: Any) -> list[str]:
     ranges: list[str] = []
     all_series = list(getattr(chart, "series", []) or [])
     for sub in getattr(chart, "_charts", []) or []:
-        all_series.extend(list(getattr(sub, "series", []) or []))
+        if sub is not chart:
+            all_series.extend(list(getattr(sub, "series", []) or []))
 
     for s in all_series:
         val = getattr(s, "val", None)
@@ -192,9 +200,10 @@ def _inspect_data_labels(chart: Any) -> tuple[bool, bool]:
     for s in getattr(chart, "series", []) or []:
         _check_dl(getattr(s, "dLbls", None) or getattr(s, "data_labels", None))
     for sub in getattr(chart, "_charts", []) or []:
-        _check_dl(getattr(sub, "dataLabels", None))
-        for s in getattr(sub, "series", []) or []:
-            _check_dl(getattr(s, "dLbls", None) or getattr(s, "data_labels", None))
+        if sub is not chart:
+            _check_dl(getattr(sub, "dataLabels", None))
+            for s in getattr(sub, "series", []) or []:
+                _check_dl(getattr(s, "dLbls", None) or getattr(s, "data_labels", None))
 
     # XML tree scan fallback (catches Google Sheets & Excel 365 dLbls variations)
     if not has_any and hasattr(chart, "to_tree"):
@@ -250,7 +259,8 @@ def inspect_chart_elements_summary(chart: Any, wb: Workbook | None = None) -> di
 
     all_series = list(getattr(chart, "series", []) or [])
     for sub in getattr(chart, "_charts", []) or []:
-        all_series.extend(list(getattr(sub, "series", []) or []))
+        if sub is not chart:
+            all_series.extend(list(getattr(sub, "series", []) or []))
 
     return {
         "type": c_type,
