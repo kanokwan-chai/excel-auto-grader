@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from openpyxl.workbook import Workbook
@@ -38,7 +39,8 @@ def check_style_item(
         return _missing_sheet_result(item, item.sheet_name)
 
     # Auto aesthetics comparison against reference template (color-agnostic!)
-    if cfg.get("match_reference_layout_ignore_color") or (not cfg and reference_wb is not None):
+    # If teacher explicitly specified `border_range`, use the explicit range-aware checker below so their exact range is honored!
+    if (cfg.get("match_reference_layout_ignore_color") or (not cfg and reference_wb is not None)) and not cfg.get("border_range"):
         ref_ws = (
             reference_wb[sheet_name]
             if (reference_wb is not None and sheet_name in reference_wb.sheetnames)
@@ -150,11 +152,20 @@ def check_style_item(
                 )
             )
 
-    # Per-cell style checks
-    # If teacher did not specify a cell (or left default 'A1') and asked for general decoration
-    # (has_fill_color / has_border / bold), scan the whole table area so shifted headers or Excel Theme Colors pass!
+    # Per-cell / range-aware style checks
+    # Trigger table-level smart check when:
+    # - teacher specified `border_range` (e.g. "A2:H20" or "A2:H19, A20:C20"), OR
+    # - teacher left target_cell blank / 'A1', OR
+    # - teacher set a multi-cell table range like 'A1:H20' with match_reference_layout_ignore_color / general decoration
     sheet_has_table_style = len(getattr(ws, "tables", {})) > 0
-    if not item.target_cell or (item.target_cell.upper() == "A1" and cfg.get("has_fill_color")):
+    explicit_border_range = str(cfg.get("border_range") or "").strip()
+    is_table_wide_decoration = (
+        bool(explicit_border_range)
+        or not item.target_cell
+        or (item.target_cell.upper() == "A1" and cfg.get("has_fill_color"))
+        or (":" in (item.target_cell or "") and bool(cfg.get("match_reference_layout_ignore_color")))
+    )
+    if is_table_wide_decoration:
         used_cells = [
             ws.cell(row=r, column=c)
             for r in range(1, min(ws.max_row or 1, 100) + 1)
@@ -175,9 +186,63 @@ def check_style_item(
                         fix_suggestion_th="เติมสีพื้นหลัง (Fill Color) ให้กับหัวตารางหรือส่วนสรุป",
                     )
                 )
-        if cfg.get("has_border"):
+        if cfg.get("has_border") or explicit_border_range:
             checks_total += 1
-            if sheet_has_table_style or any(_cell_has_border(c) for c in used_cells):
+            range_spec = explicit_border_range or (item.target_cell if (item.target_cell and ":" in item.target_cell) else "")
+            if range_spec:
+                # Expand one or more comma-separated ranges (e.g. "A2:H19, A20:C20")
+                border_coords: list[str] = []
+                for part in re.split(r"[,;\s]+", range_spec):
+                    p_clean = part.strip().upper().replace("$", "")
+                    if not p_clean:
+                        continue
+                    try:
+                        border_coords.extend(expand_cell_targets(p_clean))
+                    except Exception:
+                        continue
+
+                if border_coords:
+                    # Map merged cell coordinates so if any cell in a merged block has a border, the block counts as bordered
+                    merged_bordered: set[str] = set()
+                    for mrng in ws.merged_cells.ranges:
+                        m_coords = expand_cell_targets(str(mrng).upper())
+                        if any(_cell_has_border(ws[mc]) for mc in m_coords):
+                            merged_bordered.update(m_coords)
+
+                    missing_border_coords = [
+                        c for c in border_coords if not (_cell_has_border(ws[c]) or c in merged_bordered)
+                    ]
+                    bordered_cnt = len(border_coords) - len(missing_border_coords)
+                    coverage = bordered_cnt / len(border_coords)
+                    if sheet_has_table_style or coverage >= 0.92:
+                        checks_passed += 1
+                    else:
+                        sample_miss = ", ".join(missing_border_coords[:6])
+                        errors.append(
+                            GradingErrorRecord(
+                                error_code="MISSING_BORDER",
+                                severity="warning",
+                                sheet_name=sheet_name,
+                                cell_reference=range_spec,
+                                message_th=f"ตีเส้นขอบตารางในช่วง {range_spec} ไม่ครบ (ใส่แล้ว {bordered_cnt}/{len(border_coords)} ช่อง, ขาดเช่น {sample_miss})",
+                                expected_detail=f"ตีเส้นขอบครบช่วง {range_spec}",
+                                actual_detail=f"มีเส้นขอบ {bordered_cnt}/{len(border_coords)} ช่อง",
+                                fix_suggestion_th=f"คลุมช่วง {range_spec} แล้วเลือก Borders > All Borders",
+                            )
+                        )
+                elif sheet_has_table_style or any(_cell_has_border(c) for c in used_cells):
+                    checks_passed += 1
+                else:
+                    errors.append(
+                        GradingErrorRecord(
+                            error_code="MISSING_BORDER",
+                            severity="warning",
+                            sheet_name=sheet_name,
+                            message_th="ยังไม่ได้ใส่เส้นขอบตาราง (Border)",
+                            fix_suggestion_th="คลุมตารางแล้วใส่เส้นขอบ (All Borders)",
+                        )
+                    )
+            elif sheet_has_table_style or any(_cell_has_border(c) for c in used_cells):
                 checks_passed += 1
             else:
                 errors.append(
@@ -189,7 +254,7 @@ def check_style_item(
                         fix_suggestion_th="คลุมตารางแล้วใส่เส้นขอบ (All Borders)",
                     )
                 )
-        if "bold" in cfg:
+        if "bold" in cfg and bool(cfg["bold"]):
             checks_total += 1
             if sheet_has_table_style or any(bool(c.font and c.font.bold) for c in used_cells):
                 checks_passed += 1

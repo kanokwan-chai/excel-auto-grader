@@ -1583,37 +1583,94 @@ export default function RubricsPage() {
                   )}
 
                   {it.category === "style" && (
-                    <div className="flex flex-wrap items-center gap-4 rounded-xl bg-[#FFF9FB] border border-[#FBD5E3] p-2.5 text-xs">
-                      <label className="inline-flex items-center gap-1.5">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(it.rule_config.has_border ?? true)}
-                          onChange={(e) =>
-                            updateItem(idx, { rule_config: { ...it.rule_config, has_border: e.target.checked } })
-                          }
+                    <div className="rounded-xl bg-[#FFF9FB] border border-[#FBD5E3] p-3 space-y-2.5 text-xs">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-bold text-[#7A1D45]">แท็บ:</span>
+                        {sampleInfo && sampleInfo.sheet_names.length > 0 ? (
+                          <Select
+                            value={it.sheet_name || ""}
+                            onChange={(e) => updateItem(idx, { sheet_name: e.target.value })}
+                            className="h-8 w-36 text-xs bg-white"
+                          >
+                            <option value="">(แท็บแรกอัตโนมัติ)</option>
+                            {sampleInfo.sheet_names.map((sn) => (
+                              <option key={sn} value={sn}>
+                                {sn}
+                              </option>
+                            ))}
+                          </Select>
+                        ) : (
+                          <Input
+                            value={it.sheet_name || ""}
+                            onChange={(e) => updateItem(idx, { sheet_name: e.target.value })}
+                            placeholder="เว้นว่าง = แท็บแรก"
+                            className="h-8 w-36 text-xs bg-white"
+                          />
+                        )}
+
+                        <span className="font-bold text-[#7A1D45]">ช่วงตีเส้นตาราง:</span>
+                        <Input
+                          value={String(it.rule_config.border_range || it.target_cell || "")}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            updateItem(idx, {
+                              target_cell: val,
+                              rule_config: {
+                                ...it.rule_config,
+                                border_range: val,
+                                ...(val.trim() ? { has_border: true } : {}),
+                              },
+                            });
+                          }}
+                          placeholder="เช่น A2:H20 หรือ A2:H19, A20:C20"
+                          className="h-8 w-64 text-xs bg-white font-mono"
                         />
-                        ตีเส้นขอบตาราง
-                      </label>
-                      <label className="inline-flex items-center gap-1.5">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(it.rule_config.bold ?? true)}
-                          onChange={(e) =>
-                            updateItem(idx, { rule_config: { ...it.rule_config, bold: e.target.checked } })
-                          }
-                        />
-                        ตัวหนาหัวตาราง
-                      </label>
-                      <label className="inline-flex items-center gap-1.5">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(it.rule_config.has_fill_color ?? true)}
-                          onChange={(e) =>
-                            updateItem(idx, { rule_config: { ...it.rule_config, has_fill_color: e.target.checked } })
-                          }
-                        />
-                        เติมสีตกแต่ง (สีใดก็ได้)
-                      </label>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-4 pt-1 border-t border-[#FDE6EF]">
+                        <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(it.rule_config.has_border ?? true)}
+                            onChange={(e) =>
+                              updateItem(idx, { rule_config: { ...it.rule_config, has_border: e.target.checked } })
+                            }
+                          />
+                          ตีเส้นขอบตาราง
+                        </label>
+                        <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(it.rule_config.bold ?? true)}
+                            onChange={(e) =>
+                              updateItem(idx, { rule_config: { ...it.rule_config, bold: e.target.checked } })
+                            }
+                          />
+                          ตัวหนาหัวตาราง
+                        </label>
+                        <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(it.rule_config.has_fill_color ?? true)}
+                            onChange={(e) =>
+                              updateItem(idx, { rule_config: { ...it.rule_config, has_fill_color: e.target.checked } })
+                            }
+                          />
+                          เติมสีตกแต่ง (สีใดก็ได้)
+                        </label>
+                        <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(it.rule_config.require_any_merge)}
+                            onChange={(e) =>
+                              updateItem(idx, {
+                                rule_config: { ...it.rule_config, require_any_merge: e.target.checked },
+                              })
+                            }
+                          />
+                          ผสานเซลล์หัวเรื่อง (Merge Cells)
+                        </label>
+                      </div>
                     </div>
                   )}
 
