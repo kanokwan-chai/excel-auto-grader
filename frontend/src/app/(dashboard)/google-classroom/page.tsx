@@ -665,7 +665,28 @@ export default function GoogleClassroomWizardPage() {
             <Button variant="outline" onClick={() => setStep(3)}>
               <ArrowLeft className="h-4 w-4" /> ย้อนกลับ
             </Button>
-            <Button disabled={selectedSubIds.length === 0} onClick={() => setStep(5)}>
+            <Button
+              disabled={selectedSubIds.length === 0}
+              onClick={async () => {
+                try {
+                  const freshRubrics = await apiRequest<Rubric[]>("/rubrics");
+                  setRubrics(freshRubrics);
+                  const matched =
+                    (selectedAssignment.local_assignment_id
+                      ? freshRubrics.find((r) => r.assignment_id === selectedAssignment.local_assignment_id)
+                      : undefined) ||
+                    freshRubrics.find((r) => r.name.trim() === selectedAssignment.title.trim());
+                  if (matched) {
+                    setSelectedRubricId(matched.id);
+                  } else if (!freshRubrics.some((r) => r.id === selectedRubricId) && freshRubrics.length > 0) {
+                    setSelectedRubricId(freshRubrics[0].id);
+                  }
+                } catch {
+                  // keep cached rubrics if offline
+                }
+                setStep(5);
+              }}
+            >
               ถัดไป: เลือกเกณฑ์ ({selectedSubIds.length} คน) <ArrowRight className="h-4 w-4" />
             </Button>
           </div>

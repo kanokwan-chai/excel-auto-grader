@@ -181,6 +181,7 @@ export interface ClassroomAssignmentItem {
   due_at?: string | null;
   turned_in_count: number;
   missing_count: number;
+  local_assignment_id?: string | null;
 }
 
 export interface ClassroomSubmissionItem {

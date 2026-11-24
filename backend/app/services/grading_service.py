@@ -65,25 +65,23 @@ def build_rubric_config_from_version(version: RubricVersion) -> RubricConfig:
 
 
 def get_or_create_latest_rubric_version(db: Session, owner_user_id: str, rubric: GradingRubric) -> RubricVersion:
-    existing = (
-        db.query(RubricVersion)
-        .filter(
-            RubricVersion.owner_user_id == owner_user_id,
-            RubricVersion.rubric_id == rubric.id,
-            RubricVersion.version_number == rubric.current_version,
-        )
-        .first()
-    )
-    if existing:
-        return existing
+    from sqlalchemy.orm.attributes import flag_modified
+    from backend.app.models.models import RubricItem
 
+    # ALWAYS read live RubricItem rows directly from DB so edits are NEVER missed by ORM relationship cache!
+    live_items = (
+        db.query(RubricItem)
+        .filter(RubricItem.rubric_id == rubric.id)
+        .order_by(RubricItem.order_index.asc())
+        .all()
+    )
     snapshot = {
         "name": rubric.name,
         "description": rubric.description,
-        "total_points": rubric.total_points,
+        "total_points": float(rubric.total_points),
         "enabled_categories": rubric.enabled_categories,
         "items": [
-            {
+            _sanitize_filter_conditions({
                 "id": item.id,
                 "title": item.title,
                 "category": item.category,
@@ -96,10 +94,27 @@ def get_or_create_latest_rubric_version(db: Session, owner_user_id: str, rubric:
                 "weight_importance": item.weight_importance,
                 "zero_on_error": bool(item.zero_on_error),
                 "is_enabled": bool(item.is_enabled),
-            }
-            for item in rubric.items
+            })
+            for item in live_items
         ],
     }
+
+    existing = (
+        db.query(RubricVersion)
+        .filter(
+            RubricVersion.owner_user_id == owner_user_id,
+            RubricVersion.rubric_id == rubric.id,
+            RubricVersion.version_number == rubric.current_version,
+        )
+        .first()
+    )
+    if existing:
+        existing.total_points = float(rubric.total_points)
+        existing.snapshot_json = snapshot
+        flag_modified(existing, "snapshot_json")
+        db.flush()
+        return existing
+
     ver = RubricVersion(
         owner_user_id=owner_user_id,
         rubric_id=rubric.id,

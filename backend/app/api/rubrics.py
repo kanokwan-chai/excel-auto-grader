@@ -179,9 +179,11 @@ def create_rubric(
             )
         )
     db.flush()
+    db.expire(rubric, ["items"])
     db.refresh(rubric)
     _create_version_snapshot(db, current_teacher.id, rubric, payload.change_note)
     db.commit()
+    db.expire(rubric, ["items"])
     db.refresh(rubric)
     return _serialize_rubric(rubric)
 
@@ -248,9 +250,11 @@ def update_rubric(
 
     rubric.current_version += 1
     db.flush()
+    db.expire(rubric, ["items"])
     db.refresh(rubric)
     _create_version_snapshot(db, current_teacher.id, rubric, payload.change_note)
     db.commit()
+    db.expire(rubric, ["items"])
     db.refresh(rubric)
     return _serialize_rubric(rubric)
 

@@ -809,6 +809,7 @@ async def run_classroom_wizard_grading(
                 submission=local_sub,
                 rubric_version=rubric_ver,
                 grading_job=job,
+                force_regrade_confirmed=True,
             )
             graded_results.append(res.id)
             if res.status == "error":

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { CheckCircle2, ClipboardCopy, Download, Edit3, Eye, FileDown, RefreshCw, Send, ShieldCheck, Unlock } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { apiRequest, downloadFileFromApi } from "@/lib/api";
@@ -24,6 +24,7 @@ interface ClassReportResponse {
   summary: {
     assignment_id: string;
     assignment_title: string;
+    last_rubric_id?: string | null;
     max_score: number;
     pass_score: number;
     total_students: number;
@@ -86,6 +87,7 @@ export default function ReportsPage() {
   // Instant re-grade without re-pulling from Classroom
   const [rubrics, setRubrics] = useState<Rubric[]>([]);
   const [regradeRubricId, setRegradeRubricId] = useState("");
+  const lastSyncedAssignmentRef = useRef<string>("");
   const [regrading, setRegrading] = useState(false);
   const [regradeProgress, setRegradeProgress] = useState<string | null>(null);
   const [overwriteConfirmed, setOverwriteConfirmed] = useState(true);
@@ -207,6 +209,12 @@ export default function ReportsPage() {
         `/reports/assignments/${assignmentId}?${params.toString()}`
       );
       setReport(data);
+      if (lastSyncedAssignmentRef.current !== assignmentId) {
+        lastSyncedAssignmentRef.current = assignmentId;
+        if (data.summary.last_rubric_id) {
+          setRegradeRubricId(data.summary.last_rubric_id);
+        }
+      }
       setSelectedIds(data.rows.map((r) => r.result_id));
       setBatchResult(null);
     } catch (err) {

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.api.deps import get_current_teacher
 from backend.app.core.database import get_db
-from backend.app.models.models import Assignment, GradingResult, Student, Submission, User
+from backend.app.models.models import Assignment, GradingResult, RubricVersion, Student, Submission, User
 from backend.app.services.export_service import (
     generate_class_report_csv,
     generate_class_report_excel,
@@ -133,9 +133,23 @@ def _build_class_report_data(
         else:
             buckets[4]["count"] += 1
 
+    last_rubric_id: str | None = None
+    sorted_by_recent = sorted(
+        results,
+        key=lambda item: item[0].graded_at.timestamp() if item[0].graded_at else 0.0,
+        reverse=True,
+    )
+    for gr_row, _, _ in sorted_by_recent:
+        if gr_row.rubric_version_id:
+            rv_obj = db.query(RubricVersion).filter(RubricVersion.id == gr_row.rubric_version_id).first()
+            if rv_obj and rv_obj.rubric_id:
+                last_rubric_id = str(rv_obj.rubric_id)
+                break
+
     summary = {
         "assignment_id": assignment.id,
         "assignment_title": assignment.title,
+        "last_rubric_id": last_rubric_id,
         "max_score": assignment.max_score,
         "pass_score": assignment.pass_score,
         "total_students": len(rows),
