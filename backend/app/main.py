@@ -28,7 +28,13 @@ settings = get_settings()
 Base.metadata.create_all(bind=engine)
 
 
-_REPAIR_STATS: dict[str, int] = {"repaired_rubrics": 0, "regraded_results": 0}
+_REPAIR_STATS: dict[str, object] = {
+    "repaired_rubrics": 0,
+    "stale_details_found": 0,
+    "regraded_results": 0,
+    "patched_comments": 0,
+    "last_error": None,
+}
 
 
 async def _auto_repair_stale_filter_rubrics_and_results() -> None:
@@ -41,6 +47,7 @@ async def _auto_repair_stale_filter_rubrics_and_results() -> None:
         Assignment,
         GoogleConnection,
         GradingDetail,
+        GradingError,
         GradingResult,
         RubricItem,
         RubricVersion,
@@ -49,48 +56,70 @@ async def _auto_repair_stale_filter_rubrics_and_results() -> None:
     )
     from backend.app.services.grading_service import grade_single_submission
 
-    bad_text_cols = {"ประเภท", "ประเภทสินค้า", "หมวดหมู่", "ยี่ห้อ", "ผู้จำหน่าย"}
     num_ops = {"gt", "gte", "lt", "lte", "between"}
+
+    def _is_wrong_text_col(col_val: object) -> bool:
+        s = str(col_val or "").strip()
+        return any(k in s for k in ("ประเภท", "หมวดหมู่", "ยี่ห้อ", "ผู้จำหน่าย", "ชื่อสินค้า"))
+
+    # Phase 1: Repair RubricItem & RubricVersion in their own isolated commit
     try:
         with SessionLocal() as db:
             changed = 0
             for ri in db.query(RubricItem).all():
-                rc = ri.rule_config or {}
+                rc = dict(ri.rule_config or {})
                 fcs = rc.get("filter_conditions")
                 if isinstance(fcs, list):
                     updated = False
+                    new_fcs = []
                     for c in fcs:
-                        if str(c.get("operator") or "").lower() in num_ops and str(c.get("column") or "").strip() in bad_text_cols:
-                            c["column"] = "ยอดขาย (ชิ้น)"
+                        c2 = dict(c)
+                        if str(c2.get("operator") or "").lower() in num_ops and _is_wrong_text_col(c2.get("column")):
+                            c2["column"] = "ยอดขาย (ชิ้น)"
                             updated = True
+                        new_fcs.append(c2)
                     if updated:
-                        ri.rule_config = dict(rc)
+                        rc["filter_conditions"] = new_fcs
+                        ri.rule_config = rc
                         flag_modified(ri, "rule_config")
                         changed += 1
 
             for rv in db.query(RubricVersion).all():
-                snap = rv.snapshot_json or {}
+                snap = dict(rv.snapshot_json or {})
                 items = snap.get("items")
                 if isinstance(items, list):
                     rv_updated = False
+                    new_items = []
                     for it in items:
-                        rc = it.get("rule_config") or {}
+                        it2 = dict(it)
+                        rc = dict(it2.get("rule_config") or {})
                         fcs = rc.get("filter_conditions")
                         if isinstance(fcs, list):
+                            new_fcs = []
                             for c in fcs:
-                                if str(c.get("operator") or "").lower() in num_ops and str(c.get("column") or "").strip() in bad_text_cols:
-                                    c["column"] = "ยอดขาย (ชิ้น)"
+                                c2 = dict(c)
+                                if str(c2.get("operator") or "").lower() in num_ops and _is_wrong_text_col(c2.get("column")):
+                                    c2["column"] = "ยอดขาย (ชิ้น)"
                                     rv_updated = True
+                                new_fcs.append(c2)
+                            rc["filter_conditions"] = new_fcs
+                            it2["rule_config"] = rc
+                        new_items.append(it2)
                     if rv_updated:
-                        rv.snapshot_json = dict(snap)
+                        snap["items"] = new_items
+                        rv.snapshot_json = snap
                         flag_modified(rv, "snapshot_json")
                         changed += 1
 
             if changed:
                 db.commit()
             _REPAIR_STATS["repaired_rubrics"] = changed
+    except Exception as exc1:
+        _REPAIR_STATS["last_error"] = f"phase1: {exc1}"
 
-            # Now find any existing GradingResult whose details still contain the old 'ประเภท > 50' error and re-grade them automatically!
+    # Phase 2: Re-grade every GradingResult that still has 'ประเภท >' in GradingDetail / GradingError / teacher_comment
+    try:
+        with SessionLocal() as db:
             stale_details = (
                 db.query(GradingDetail)
                 .filter(
@@ -99,67 +128,112 @@ async def _auto_repair_stale_filter_rubrics_and_results() -> None:
                 )
                 .all()
             )
-            affected_result_ids = list({d.grading_result_id for d in stale_details})
-            regraded = 0
-            for res_id in affected_result_ids:
-                gr = db.query(GradingResult).filter(GradingResult.id == res_id).first()
-                if not gr:
-                    continue
-                was_confirmed = bool(gr.is_confirmed)
-                assign = db.query(Assignment).filter(Assignment.id == gr.assignment_id).first()
-                sub = db.query(Submission).filter(Submission.id == gr.submission_id).first()
-                rver = db.query(RubricVersion).filter(RubricVersion.id == gr.rubric_version_id).first()
-                if not assign or not sub or not rver:
-                    continue
-                pf = (
-                    db.query(SubmissionFile)
-                    .filter(SubmissionFile.submission_id == sub.id)
-                    .order_by(SubmissionFile.is_primary.desc(), SubmissionFile.created_at.desc())
-                    .first()
+            stale_errors = (
+                db.query(GradingError)
+                .filter(
+                    (GradingError.message_th.like("%ประเภท >%"))
+                    | (GradingError.fix_suggestion_th.like("%ประเภท >%"))
                 )
-                if pf:
-                    try:
-                        storage_service.get_local_path(pf.storage_path, gr.owner_user_id)
-                    except FileNotFoundError:
-                        if pf.google_drive_file_id:
-                            conn = (
-                                db.query(GoogleConnection)
-                                .filter(
-                                    GoogleConnection.owner_user_id == gr.owner_user_id,
-                                    GoogleConnection.status == "connected",
-                                    GoogleConnection.deleted_at.is_(None),
-                                )
-                                .first()
-                            )
-                            if conn:
-                                content, _ = await download_drive_excel_file(db, conn, pf.google_drive_file_id)
-                                pf.storage_path = storage_service.save_bytes(
-                                    user_id=gr.owner_user_id,
-                                    folder="submissions",
-                                    filename=pf.original_filename or "recovered.xlsx",
-                                    content=content,
-                                )
-                                db.commit()
-                try:
-                    new_res = grade_single_submission(
-                        db,
-                        owner_user_id=gr.owner_user_id,
-                        assignment=assign,
-                        submission=sub,
-                        rubric_version=rver,
-                        enable_libreoffice=False,
-                        force_regrade_confirmed=True,
+                .all()
+            )
+            affected_ids = list(
+                {d.grading_result_id for d in stale_details}
+                | {e.grading_result_id for e in stale_errors}
+            )
+            _REPAIR_STATS["stale_details_found"] = len(affected_ids)
+
+        regraded = 0
+        for res_id in affected_ids:
+            try:
+                with SessionLocal() as db:
+                    gr = db.query(GradingResult).filter(GradingResult.id == res_id).first()
+                    if not gr:
+                        continue
+                    was_confirmed = bool(gr.is_confirmed)
+                    assign = db.query(Assignment).filter(Assignment.id == gr.assignment_id).first()
+                    sub = db.query(Submission).filter(Submission.id == gr.submission_id).first()
+                    rver = db.query(RubricVersion).filter(RubricVersion.id == gr.rubric_version_id).first()
+                    if not assign or not sub or not rver:
+                        continue
+
+                    pf = (
+                        db.query(SubmissionFile)
+                        .filter(SubmissionFile.submission_id == sub.id)
+                        .order_by(SubmissionFile.is_primary.desc(), SubmissionFile.created_at.desc())
+                        .first()
                     )
-                    if was_confirmed:
-                        new_res.is_confirmed = True
-                        new_res.status = "confirmed"
+                    file_ready = False
+                    if pf:
+                        try:
+                            storage_service.get_local_path(pf.storage_path, gr.owner_user_id)
+                            file_ready = True
+                        except FileNotFoundError:
+                            if pf.google_drive_file_id:
+                                conn = (
+                                    db.query(GoogleConnection)
+                                    .filter(
+                                        GoogleConnection.owner_user_id == gr.owner_user_id,
+                                        GoogleConnection.status == "connected",
+                                        GoogleConnection.deleted_at.is_(None),
+                                    )
+                                    .first()
+                                )
+                                if conn:
+                                    content, _ = await download_drive_excel_file(db, conn, pf.google_drive_file_id)
+                                    pf.storage_path = storage_service.save_bytes(
+                                        user_id=gr.owner_user_id,
+                                        folder="submissions",
+                                        filename=pf.original_filename or "recovered.xlsx",
+                                        content=content,
+                                    )
+                                    db.commit()
+                                    file_ready = True
+
+                    if file_ready:
+                        new_res = grade_single_submission(
+                            db,
+                            owner_user_id=gr.owner_user_id,
+                            assignment=assign,
+                            submission=sub,
+                            rubric_version=rver,
+                            enable_libreoffice=False,
+                            force_regrade_confirmed=True,
+                        )
+                        if was_confirmed:
+                            new_res.is_confirmed = True
+                            new_res.status = "confirmed"
+                            db.commit()
+                        regraded += 1
+                    else:
+                        # Fallback if old local test upload has no Drive file: clean stale 'ประเภท > 50' text directly
+                        for d in gr.details:
+                            if d.reason and "ประเภท >" in d.reason:
+                                d.reason = d.reason.replace("ประเภท >", "ยอดขาย (ชิ้น) >")
+                            if d.suggestion and "ประเภท >" in d.suggestion:
+                                d.suggestion = d.suggestion.replace("ประเภท >", "ยอดขาย (ชิ้น) >")
+                        for e in gr.errors:
+                            if e.message_th and "ประเภท >" in e.message_th:
+                                e.message_th = e.message_th.replace("ประเภท >", "ยอดขาย (ชิ้น) >")
+                            if e.fix_suggestion_th and "ประเภท >" in e.fix_suggestion_th:
+                                e.fix_suggestion_th = e.fix_suggestion_th.replace("ประเภท >", "ยอดขาย (ชิ้น) >")
+                        if gr.teacher_comment and "ประเภท >" in gr.teacher_comment:
+                            gr.teacher_comment = gr.teacher_comment.replace("ประเภท >", "ยอดขาย (ชิ้น) >")
                         db.commit()
-                    regraded += 1
-                except Exception:
-                    db.rollback()
-            _REPAIR_STATS["regraded_results"] = regraded
-    except Exception:
-        pass
+            except Exception as exc_item:
+                _REPAIR_STATS["last_error"] = f"item {res_id[:8]}: {exc_item}"
+
+        # Phase 3: Clean any remaining teacher_comment strings that still say 'ประเภท >'
+        with SessionLocal() as db:
+            patched_c = 0
+            for gr in db.query(GradingResult).filter(GradingResult.teacher_comment.like("%ประเภท >%")).all():
+                gr.teacher_comment = gr.teacher_comment.replace("ประเภท >", "ยอดขาย (ชิ้น) >")
+                patched_c += 1
+            if patched_c:
+                db.commit()
+            _REPAIR_STATS["patched_comments"] = patched_c
+        _REPAIR_STATS["regraded_results"] = regraded
+    except Exception as exc2:
+        _REPAIR_STATS["last_error"] = f"phase2: {exc2}"
 
 app = FastAPI(
     title="Excel Auto Grader API",
@@ -205,7 +279,7 @@ async def on_startup_repair():
 
 @app.get("/ping")
 def lightweight_ping():
-    return {"ok": True, "build": "fix-q5-live", **_REPAIR_STATS}
+    return {"ok": True, "build": "fix-q5-v3", **_REPAIR_STATS}
 
 
 @app.get("/health")
