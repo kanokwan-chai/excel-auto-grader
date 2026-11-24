@@ -30,9 +30,27 @@ from excel_engine.scoring.engine import ExcelGradingEngine
 settings = get_settings()
 
 
+def _sanitize_filter_conditions(item_dict: dict[str, Any]) -> dict[str, Any]:
+    """Auto-fix stale rubric filter_conditions where a numeric operator was accidentally bound to text column 'ประเภท'."""
+    rc = dict(item_dict.get("rule_config") or {})
+    fcs = rc.get("filter_conditions")
+    if isinstance(fcs, list):
+        fixed_fcs = []
+        for c in fcs:
+            c_copy = dict(c)
+            op = str(c_copy.get("operator") or "").lower()
+            col = str(c_copy.get("column") or "").strip()
+            if op in ("gt", "gte", "lt", "lte", "between") and col in ("ประเภท", "ประเภทสินค้า", "หมวดหมู่", "ยี่ห้อ", "ผู้จำหน่าย"):
+                c_copy["column"] = "ยอดขาย (ชิ้น)"
+            fixed_fcs.append(c_copy)
+        rc["filter_conditions"] = fixed_fcs
+        item_dict = {**item_dict, "rule_config": rc}
+    return item_dict
+
+
 def build_rubric_config_from_version(version: RubricVersion) -> RubricConfig:
     snap: dict[str, Any] = version.snapshot_json
-    items = [RubricItemConfig(**item) for item in snap.get("items", [])]
+    items = [RubricItemConfig(**_sanitize_filter_conditions(item)) for item in snap.get("items", [])]
     return RubricConfig(
         id=str(version.rubric_id),
         name=snap.get("name", "Rubric"),
@@ -104,22 +122,25 @@ def grade_single_submission(
     rubric_version: RubricVersion,
     grading_job: GradingJob | None = None,
     enable_libreoffice: bool = True,
+    force_regrade_confirmed: bool = False,
 ) -> GradingResult:
     """
     Grade a single submission's primary Excel file.
-    CRITICAL RULE: Never overwrite a result that the teacher has already confirmed (`is_confirmed=True`).
+    CRITICAL RULE: Never overwrite a result that the teacher has already confirmed (`is_confirmed=True`),
+    UNLESS the teacher explicitly triggered an intentional re-grade (`force_regrade_confirmed=True`).
     """
-    existing_confirmed = (
-        db.query(GradingResult)
-        .filter(
-            GradingResult.owner_user_id == owner_user_id,
-            GradingResult.submission_id == submission.id,
-            GradingResult.is_confirmed.is_(True),
+    if not force_regrade_confirmed:
+        existing_confirmed = (
+            db.query(GradingResult)
+            .filter(
+                GradingResult.owner_user_id == owner_user_id,
+                GradingResult.submission_id == submission.id,
+                GradingResult.is_confirmed.is_(True),
+            )
+            .first()
         )
-        .first()
-    )
-    if existing_confirmed:
-        return existing_confirmed
+        if existing_confirmed:
+            return existing_confirmed
 
     primary_file = (
         db.query(SubmissionFile)
@@ -131,12 +152,14 @@ def grade_single_submission(
         .first()
     )
 
-    # Remove previous unconfirmed result for clean re-grade
-    db.query(GradingResult).filter(
+    # Remove previous result for clean re-grade
+    del_q = db.query(GradingResult).filter(
         GradingResult.owner_user_id == owner_user_id,
         GradingResult.submission_id == submission.id,
-        GradingResult.is_confirmed.is_(False),
-    ).delete()
+    )
+    if not force_regrade_confirmed:
+        del_q = del_q.filter(GradingResult.is_confirmed.is_(False))
+    del_q.delete()
     db.flush()
 
     if not primary_file:

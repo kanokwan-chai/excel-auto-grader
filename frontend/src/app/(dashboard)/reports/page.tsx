@@ -88,6 +88,7 @@ export default function ReportsPage() {
   const [regradeRubricId, setRegradeRubricId] = useState("");
   const [regrading, setRegrading] = useState(false);
   const [regradeProgress, setRegradeProgress] = useState<string | null>(null);
+  const [overwriteConfirmed, setOverwriteConfirmed] = useState(true);
 
   const [detail, setDetail] = useState<GradingResultDetail | null>(null);
   const [excelPreview, setExcelPreview] = useState<ExcelPreviewData | null>(null);
@@ -162,6 +163,7 @@ export default function ReportsPage() {
               assignment_id: assignmentId,
               rubric_id: regradeRubricId,
               submission_ids: chunk,
+              force_regrade_confirmed: overwriteConfirmed,
             }),
           });
           done += res.processed_files;
@@ -173,6 +175,7 @@ export default function ReportsPage() {
           body: JSON.stringify({
             assignment_id: assignmentId,
             rubric_id: regradeRubricId,
+            force_regrade_confirmed: overwriteConfirmed,
           }),
         });
         done = res.processed_files;
@@ -464,8 +467,17 @@ export default function ReportsPage() {
                   🔄 รีการตรวจทันที (ใช้ไฟล์เดิมที่ดึงไว้แล้ว ไม่ต้องกลับไปดึงจาก Classroom ใหม่)
                 </p>
                 <p className="text-xs text-slate-600">
-                  เมื่อแก้ไขเกณฑ์เสร็จ เลือกเกณฑ์ด้านขวาแล้วกดรีการตรวจได้ทันที (คนที่กดยืนยันคะแนนไว้แล้วจะไม่ถูกเขียนทับ)
+                  เมื่อแก้ไขเกณฑ์เสร็จ เลือกเกณฑ์ด้านขวาแล้วกดรีการตรวจได้ทันที
                 </p>
+                <label className="mt-1 inline-flex items-center gap-1.5 text-xs font-semibold text-sky-900 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={overwriteConfirmed}
+                    onChange={(e) => setOverwriteConfirmed(e.target.checked)}
+                    className="rounded accent-sky-600"
+                  />
+                  คำนวณคะแนนใหม่ทับคนที่เคยกดยืนยันคะแนนแล้วด้วย
+                </label>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Select

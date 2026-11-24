@@ -135,6 +135,7 @@ async def run_grading_job(
                 submission=sub,
                 rubric_version=rubric_ver,
                 grading_job=job,
+                force_regrade_confirmed=payload.force_regrade_confirmed,
             )
             processed += 1
             if res.status == "error":

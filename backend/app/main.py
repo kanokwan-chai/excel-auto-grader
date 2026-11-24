@@ -27,6 +27,56 @@ settings = get_settings()
 # Ensure tables exist in dev/test SQLite or fresh Postgres environments
 Base.metadata.create_all(bind=engine)
 
+
+def _auto_repair_stale_filter_rubrics() -> None:
+    """One-time safe auto-repair for any saved RubricItem/RubricVersion where numeric filter had column='ประเภท'."""
+    from sqlalchemy.orm.attributes import flag_modified
+    from backend.app.core.database import SessionLocal
+    from backend.app.models.models import RubricItem, RubricVersion
+
+    bad_text_cols = {"ประเภท", "ประเภทสินค้า", "หมวดหมู่", "ยี่ห้อ", "ผู้จำหน่าย"}
+    num_ops = {"gt", "gte", "lt", "lte", "between"}
+    try:
+        with SessionLocal() as db:
+            changed = False
+            for ri in db.query(RubricItem).all():
+                rc = ri.rule_config or {}
+                fcs = rc.get("filter_conditions")
+                if isinstance(fcs, list):
+                    updated = False
+                    for c in fcs:
+                        if str(c.get("operator") or "").lower() in num_ops and str(c.get("column") or "").strip() in bad_text_cols:
+                            c["column"] = "ยอดขาย (ชิ้น)"
+                            updated = True
+                    if updated:
+                        ri.rule_config = dict(rc)
+                        flag_modified(ri, "rule_config")
+                        changed = True
+            for rv in db.query(RubricVersion).all():
+                snap = rv.snapshot_json or {}
+                items = snap.get("items")
+                if isinstance(items, list):
+                    rv_updated = False
+                    for it in items:
+                        rc = it.get("rule_config") or {}
+                        fcs = rc.get("filter_conditions")
+                        if isinstance(fcs, list):
+                            for c in fcs:
+                                if str(c.get("operator") or "").lower() in num_ops and str(c.get("column") or "").strip() in bad_text_cols:
+                                    c["column"] = "ยอดขาย (ชิ้น)"
+                                    rv_updated = True
+                    if rv_updated:
+                        rv.snapshot_json = dict(snap)
+                        flag_modified(rv, "snapshot_json")
+                        changed = True
+            if changed:
+                db.commit()
+    except Exception:
+        pass
+
+
+_auto_repair_stale_filter_rubrics()
+
 app = FastAPI(
     title="Excel Auto Grader API",
     description="Multi-Teacher SaaS Platform for Automatic Microsoft Excel Grading & Google Classroom Integration",

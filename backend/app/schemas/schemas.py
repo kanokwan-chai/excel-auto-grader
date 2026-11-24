@@ -198,6 +198,7 @@ class StartGradingRequest(BaseModel):
     rubric_id: str
     submission_ids: list[str] | None = None  # None = grade all eligible unconfirmed submissions
     force_regrade_unconfirmed: bool = True
+    force_regrade_confirmed: bool = False
 
 
 class GradeAdjustmentRequest(BaseModel):
