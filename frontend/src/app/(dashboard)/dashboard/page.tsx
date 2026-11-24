@@ -166,16 +166,16 @@ export default function DashboardPage() {
           </div>
         </div>
         <div className="flex flex-wrap gap-2.5">
-          <Link href="/google-classroom">
+          <Link href="/classroom-create">
             <Button variant="outline" size="lg">
-              <span className="text-base">🧑‍🏫</span>
-              ตรวจผ่าน Google Classroom
+              <span className="text-base">🚀</span>
+              สร้างงานลง Classroom
             </Button>
           </Link>
-          <Link href="/grading">
+          <Link href="/google-classroom">
             <Button size="lg">
-              <span className="text-base">📤</span>
-              อัปโหลดไฟล์ตรวจงาน
+              <span className="text-base">🎓</span>
+              ตรวจผ่าน Google Classroom
             </Button>
           </Link>
         </div>
@@ -293,7 +293,7 @@ export default function DashboardPage() {
               <h2 className="text-sm font-extrabold text-[#164E78]">รายการงานล่าสุด</h2>
             </div>
             <Link
-              href="/assignments"
+              href="/google-classroom"
               className="text-xs font-bold text-[#2574A9] hover:underline flex items-center gap-1"
             >
               ดูทั้งหมด →
@@ -302,14 +302,14 @@ export default function DashboardPage() {
           {data.recent_assignments.length === 0 ? (
             <EmptyState
               title="ยังไม่มีงานที่มอบหมาย"
-              description="เริ่มต้นด้วยการสร้างงานใหม่หรือเชื่อมจาก Google Classroom"
+              description="เริ่มต้นด้วยการสร้างงานลง Classroom หรือดึงงานจาก Google Classroom"
             />
           ) : (
             <div className="space-y-3">
               {data.recent_assignments.map((a) => (
                 <Link
                   key={a.id}
-                  href="/assignments"
+                  href="/reports"
                   className="flex items-center justify-between gap-3 rounded-2xl border border-[#E5F2E1] bg-gradient-to-r from-[#FAFDF9] to-white px-3.5 py-3 hover:border-[#9CE077] hover:shadow-xs transition"
                 >
                   <div className="flex items-center gap-3 min-w-0">

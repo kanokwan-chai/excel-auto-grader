@@ -80,6 +80,7 @@ def _build_class_report_data(
 
         rows.append({
             "result_id": gr.id,
+            "submission_id": sub.id,
             "seat_number": seat,
             "student_code": code,
             "student_name": name,

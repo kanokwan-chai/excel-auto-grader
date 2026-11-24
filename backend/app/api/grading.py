@@ -37,12 +37,15 @@ router = APIRouter(prefix="/grading", tags=["Grading & History"])
 
 
 @router.post("/run")
-def run_grading_job(
+async def run_grading_job(
     payload: StartGradingRequest,
     current_teacher: User = Depends(get_current_teacher),
     db: Session = Depends(get_db),
 ):
-    """Execute automatic Excel grading for an assignment using the selected rubric version."""
+    """Execute automatic Excel grading (or instant re-grading without re-syncing Classroom)."""
+    from backend.app.integrations.google_classroom import download_drive_excel_file
+    from backend.app.models.models import GoogleConnection
+
     assignment = (
         db.query(Assignment)
         .filter(
@@ -94,6 +97,37 @@ def run_grading_job(
 
     for sub in submissions:
         try:
+            # Ensure stored file is available locally (if old pre-Supabase path vanished after Render restart, recover once)
+            pf = (
+                db.query(SubmissionFile)
+                .filter(SubmissionFile.owner_user_id == current_teacher.id, SubmissionFile.submission_id == sub.id)
+                .order_by(SubmissionFile.is_primary.desc(), SubmissionFile.created_at.desc())
+                .first()
+            )
+            if pf:
+                try:
+                    storage_service.get_local_path(pf.storage_path, current_teacher.id)
+                except FileNotFoundError:
+                    if pf.google_drive_file_id:
+                        conn = (
+                            db.query(GoogleConnection)
+                            .filter(
+                                GoogleConnection.owner_user_id == current_teacher.id,
+                                GoogleConnection.status == "connected",
+                                GoogleConnection.deleted_at.is_(None),
+                            )
+                            .first()
+                        )
+                        if conn:
+                            content, _ = await download_drive_excel_file(db, conn, pf.google_drive_file_id)
+                            pf.storage_path = storage_service.save_bytes(
+                                user_id=current_teacher.id,
+                                folder="submissions",
+                                filename=pf.original_filename or "recovered.xlsx",
+                                content=content,
+                            )
+                            db.commit()
+
             res = grade_single_submission(
                 db,
                 owner_user_id=current_teacher.id,

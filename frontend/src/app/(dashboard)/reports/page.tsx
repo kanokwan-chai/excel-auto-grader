@@ -1,10 +1,10 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { CheckCircle2, ClipboardCopy, Download, Edit3, Eye, FileDown, Send, ShieldCheck, Unlock } from "lucide-react";
+import { CheckCircle2, ClipboardCopy, Download, Edit3, Eye, FileDown, RefreshCw, Send, ShieldCheck, Unlock } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { apiRequest, downloadFileFromApi } from "@/lib/api";
-import type { AssignmentItem, GradingResultDetail } from "@/types";
+import type { AssignmentItem, GradingResultDetail, Rubric } from "@/types";
 import { useToast } from "@/components/ui/toast";
 import { ExcelSpreadsheetPreview, type ExcelPreviewData } from "@/components/excel/excel-preview";
 import {
@@ -36,6 +36,7 @@ interface ClassReportResponse {
   distribution: { range: string; count: number }[];
   rows: {
     result_id: string;
+    submission_id?: string;
     seat_number: number;
     student_code: string;
     student_name: string;
@@ -82,6 +83,12 @@ export default function ReportsPage() {
   const [batchPushing, setBatchPushing] = useState(false);
   const [batchResult, setBatchResult] = useState<BatchPushResponse | null>(null);
 
+  // Instant re-grade without re-pulling from Classroom
+  const [rubrics, setRubrics] = useState<Rubric[]>([]);
+  const [regradeRubricId, setRegradeRubricId] = useState("");
+  const [regrading, setRegrading] = useState(false);
+  const [regradeProgress, setRegradeProgress] = useState<string | null>(null);
+
   const [detail, setDetail] = useState<GradingResultDetail | null>(null);
   const [excelPreview, setExcelPreview] = useState<ExcelPreviewData | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -105,13 +112,80 @@ export default function ReportsPage() {
   };
 
   useEffect(() => {
-    apiRequest<AssignmentItem[]>("/assignments")
-      .then((list) => {
-        setAssignments(list);
-        if (list.length > 0) setAssignmentId(list[0].id);
+    Promise.all([
+      apiRequest<AssignmentItem[]>("/assignments"),
+      apiRequest<Rubric[]>("/rubrics"),
+    ])
+      .then(([assignList, rubricList]) => {
+        setAssignments(assignList);
+        setRubrics(rubricList);
+        if (assignList.length > 0) setAssignmentId(assignList[0].id);
+        if (rubricList.length > 0) setRegradeRubricId(rubricList[0].id);
       })
       .catch((err) => setError(err instanceof Error ? err.message : "โหลดรายการงานไม่สำเร็จ"));
   }, []);
+
+  useEffect(() => {
+    if (!assignmentId || rubrics.length === 0) return;
+    const matched = rubrics.find((r) => r.assignment_id === assignmentId);
+    if (matched) setRegradeRubricId(matched.id);
+  }, [assignmentId, rubrics]);
+
+  const handleQuickRegrade = async (onlySelected: boolean) => {
+    if (!assignmentId || !regradeRubricId || !report) {
+      toast("กรุณาเลือกงานและเกณฑ์การตรวจก่อน", "error");
+      return;
+    }
+    const targetRows = onlySelected
+      ? report.rows.filter((r) => selectedIds.includes(r.result_id))
+      : report.rows;
+    const subIds = targetRows.map((r) => r.submission_id).filter((id): id is string => Boolean(id));
+    if (onlySelected && targetRows.length === 0) {
+      toast("กรุณาติ๊กเลือกนักเรียนอย่างน้อย 1 คน", "error");
+      return;
+    }
+
+    setRegrading(true);
+    setRegradeProgress(null);
+    const BATCH_SIZE = 5;
+    let done = 0;
+    try {
+      if (subIds.length > 0) {
+        const totalBatches = Math.ceil(subIds.length / BATCH_SIZE);
+        for (let i = 0; i < subIds.length; i += BATCH_SIZE) {
+          const chunk = subIds.slice(i, i + BATCH_SIZE);
+          const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+          setRegradeProgress(`กำลังรีการตรวจชุดที่ ${batchNum}/${totalBatches} (เสร็จแล้ว ${done}/${subIds.length} คน)...`);
+          const res = await apiRequest<{ processed_files: number }>("/grading/run", {
+            method: "POST",
+            body: JSON.stringify({
+              assignment_id: assignmentId,
+              rubric_id: regradeRubricId,
+              submission_ids: chunk,
+            }),
+          });
+          done += res.processed_files;
+        }
+      } else {
+        setRegradeProgress("กำลังรีการตรวจทั้งห้อง...");
+        const res = await apiRequest<{ processed_files: number }>("/grading/run", {
+          method: "POST",
+          body: JSON.stringify({
+            assignment_id: assignmentId,
+            rubric_id: regradeRubricId,
+          }),
+        });
+        done = res.processed_files;
+      }
+      toast(`รีการตรวจด้วยเกณฑ์ล่าสุดเรียบร้อยแล้ว (${done} คน) ✨`);
+      await loadReport();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "รีการตรวจไม่สำเร็จ", "error");
+    } finally {
+      setRegrading(false);
+      setRegradeProgress(null);
+    }
+  };
 
   const loadReport = async () => {
     if (!assignmentId) return;
@@ -380,6 +454,57 @@ export default function ReportsPage() {
                 </BarChart>
               </ResponsiveContainer>
             </div>
+          </Card>
+
+          {/* Instant Re-grade Bar (No Classroom Re-sync Needed!) */}
+          <Card className="border-sky-200 bg-sky-50/40 p-4 space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-bold text-sky-950">
+                  🔄 รีการตรวจทันที (ใช้ไฟล์เดิมที่ดึงไว้แล้ว ไม่ต้องกลับไปดึงจาก Classroom ใหม่)
+                </p>
+                <p className="text-xs text-slate-600">
+                  เมื่อแก้ไขเกณฑ์เสร็จ เลือกเกณฑ์ด้านขวาแล้วกดรีการตรวจได้ทันที (คนที่กดยืนยันคะแนนไว้แล้วจะไม่ถูกเขียนทับ)
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Select
+                  value={regradeRubricId}
+                  onChange={(e) => setRegradeRubricId(e.target.value)}
+                  className="w-64 bg-white"
+                >
+                  <option value="">-- เลือกเกณฑ์การตรวจ --</option>
+                  {rubrics.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name} (v{r.current_version} • {r.total_points} คะแนน)
+                    </option>
+                  ))}
+                </Select>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  loading={regrading}
+                  disabled={!regradeRubricId || selectedIds.length === 0}
+                  onClick={() => handleQuickRegrade(true)}
+                >
+                  <RefreshCw className="h-3.5 w-3.5" /> รีการตรวจที่เลือก ({selectedIds.length})
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  loading={regrading}
+                  disabled={!regradeRubricId}
+                  onClick={() => handleQuickRegrade(false)}
+                >
+                  <RefreshCw className="h-3.5 w-3.5" /> รีการตรวจทั้งห้อง ({report.rows.length})
+                </Button>
+              </div>
+            </div>
+            {regradeProgress && (
+              <div className="rounded-xl border border-sky-200 bg-white px-3 py-2 text-xs font-semibold text-sky-900 animate-pulse">
+                ⏳ {regradeProgress}
+              </div>
+            )}
           </Card>
 
           {/* Batch Approve & Push to Google Classroom Bar */}
