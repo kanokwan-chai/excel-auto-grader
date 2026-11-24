@@ -895,6 +895,133 @@ export default function RubricsPage() {
                     onChange={(e) => updateItem(idx, { max_points: Number(e.target.value) })}
                   />
                 </div>
+                {/* Visible Sheet & Filter Condition Editor when category === "structure" */}
+                {it.category === "structure" && (
+                  <div className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-2.5 space-y-2 text-xs">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold text-emerald-900">ชื่อแท็บ (Sheet):</span>
+                      <Input
+                        value={it.sheet_name || ""}
+                        onChange={(e) => updateItem(idx, { sheet_name: e.target.value })}
+                        placeholder="เช่น ข้อที่1, ข้อที่5 (เว้นว่างได้)"
+                        className="h-8 w-44 text-xs"
+                      />
+                      <label className="inline-flex items-center gap-1.5 text-emerald-900">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(it.rule_config.require_no_active_filter)}
+                          onChange={(e) =>
+                            updateItem(idx, {
+                              rule_config: e.target.checked
+                                ? { require_no_active_filter: true, expected_visible_rows: Number(it.rule_config.expected_visible_rows || 30) }
+                                : { require_autofilter: true, filter_conditions: [{ column: "", operator: "equals", value: "" }] },
+                            })
+                          }
+                        />
+                        โจทย์ให้ยกเลิกตัวกรองทั้งหมด
+                      </label>
+                      {Boolean(it.rule_config.require_no_active_filter) && (
+                        <div className="inline-flex items-center gap-1">
+                          <span>แสดงครบ:</span>
+                          <Input
+                            type="number"
+                            value={Number(it.rule_config.expected_visible_rows ?? 30)}
+                            onChange={(e) =>
+                              updateItem(idx, {
+                                rule_config: { ...it.rule_config, expected_visible_rows: Number(e.target.value) },
+                              })
+                            }
+                            className="h-8 w-20 text-xs"
+                          />
+                          <span>รายการ</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {!it.rule_config.require_no_active_filter && (
+                      <div className="space-y-1.5">
+                        {(Array.isArray(it.rule_config.filter_conditions)
+                          ? (it.rule_config.filter_conditions as { column?: string; operator?: string; value?: string | number }[])
+                          : []
+                        ).map((fc, fcIdx, arr) => (
+                          <div key={fcIdx} className="flex flex-wrap items-center gap-1.5">
+                            <Input
+                              value={fc.column || ""}
+                              onChange={(e) => {
+                                const next = [...arr];
+                                next[fcIdx] = { ...fc, column: e.target.value };
+                                updateItem(idx, { rule_config: { ...it.rule_config, require_autofilter: true, filter_conditions: next } });
+                              }}
+                              placeholder="ชื่อคอลัมน์ เช่น ยอดขาย, ประเภท"
+                              className="h-8 w-44 text-xs"
+                            />
+                            <Select
+                              value={fc.operator || "equals"}
+                              onChange={(e) => {
+                                const next = [...arr];
+                                next[fcIdx] = { ...fc, operator: e.target.value };
+                                updateItem(idx, { rule_config: { ...it.rule_config, require_autofilter: true, filter_conditions: next } });
+                              }}
+                              className="h-8 w-44 text-xs"
+                            >
+                              <option value="equals">เท่ากับ (=)</option>
+                              <option value="not_equals">ไม่เท่ากับ (≠)</option>
+                              <option value="starts_with">ขึ้นต้นด้วย</option>
+                              <option value="ends_with">ลงท้ายด้วย</option>
+                              <option value="contains">มีคำว่า</option>
+                              <option value="gt">มากกว่า (&gt;)</option>
+                              <option value="gte">ตั้งแต่ (&gt;=)</option>
+                              <option value="lt">น้อยกว่า (&lt;)</option>
+                              <option value="lte">ไม่เกิน (&lt;=)</option>
+                            </Select>
+                            <Input
+                              value={String(fc.value ?? "")}
+                              onChange={(e) => {
+                                const raw = e.target.value;
+                                const isNumOp = ["gt", "gte", "lt", "lte"].includes(fc.operator || "");
+                                const parsedVal = isNumOp && raw !== "" && !Number.isNaN(Number(raw)) ? Number(raw) : raw;
+                                const next = [...arr];
+                                next[fcIdx] = { ...fc, value: parsedVal };
+                                updateItem(idx, { rule_config: { ...it.rule_config, require_autofilter: true, filter_conditions: next } });
+                              }}
+                              placeholder="ค่าที่ต้องการกรอง เช่น 50, Pentel"
+                              className="h-8 w-44 text-xs"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const next = arr.filter((_, i) => i !== fcIdx);
+                                updateItem(idx, { rule_config: { ...it.rule_config, filter_conditions: next } });
+                              }}
+                              className="rounded-lg px-2 py-1 text-rose-600 hover:bg-rose-50"
+                            >
+                              ลบ
+                            </button>
+                          </div>
+                        ))}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const curr = Array.isArray(it.rule_config.filter_conditions)
+                              ? (it.rule_config.filter_conditions as Record<string, unknown>[])
+                              : [];
+                            updateItem(idx, {
+                              rule_config: {
+                                ...it.rule_config,
+                                require_autofilter: true,
+                                filter_conditions: [...curr, { column: "", operator: "equals", value: "" }],
+                              },
+                            });
+                          }}
+                          className="text-[11px] font-semibold text-emerald-700 hover:underline"
+                        >
+                          + เพิ่มเงื่อนไขกรองในแท็บนี้
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
                   <div className="flex flex-wrap items-center gap-4">
                     <span className="rounded-lg bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">

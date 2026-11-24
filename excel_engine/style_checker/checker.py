@@ -1095,6 +1095,16 @@ def _resolve_filter_column_index(
     val = cond.get("value")
     val2 = cond.get("value2")
 
+    is_numeric_op = op in ("gt", "gte", "lt", "lte", "between")
+
+    def _col_is_numeric(c_idx: int) -> bool:
+        num_cells = sum(
+            1
+            for r in data_rows
+            if _to_float_safe(ws.cell(row=r, column=c_idx).value) is not None
+        )
+        return num_cells > 0
+
     def _col_hits(c_idx: int) -> int:
         return sum(
             1
@@ -1106,7 +1116,9 @@ def _resolve_filter_column_index(
     matched_header_col: int | None = None
     if col_spec:
         if re.fullmatch(r"[A-Za-z]{1,2}", col_spec):
-            return column_index_from_string(col_spec.upper())
+            c_let = column_index_from_string(col_spec.upper())
+            if not is_numeric_op or _col_is_numeric(c_let):
+                return c_let
 
         spec_key = _norm_header_key(col_spec)
         # Strip unit suffix inside parens like "ยอดขาย (ชิ้น)" -> core "ยอดขาย"
@@ -1116,6 +1128,8 @@ def _resolve_filter_column_index(
         for c in range(1, max_c + 1):
             hk = _norm_header_key(ws.cell(row=header_row, column=c).value)
             if hk and (hk == spec_key or (spec_core and hk == spec_core)):
+                if is_numeric_op and not _col_is_numeric(c):
+                    continue
                 matched_header_col = c
                 if _col_hits(c) > 0:
                     return c
@@ -1127,18 +1141,29 @@ def _resolve_filter_column_index(
                 hk = _norm_header_key(ws.cell(row=header_row, column=c).value)
                 if not hk:
                     continue
+                if is_numeric_op and not _col_is_numeric(c):
+                    continue
                 if (spec_key and (spec_key in hk or hk in spec_key)) or (spec_core and len(spec_core) >= 2 and (spec_core in hk or hk in spec_core)):
                     candidates.append(c)
             if candidates:
-                # Prefer candidate that actually has matching values in data_rows
                 for cand in candidates:
                     if _col_hits(cand) > 0:
                         return cand
                 matched_header_col = candidates[0]
 
-    # 3) For text conditions (equals/starts_with/ends_with/contains), if header guess had 0 hits across the entire table,
+    # 3) Smart fallback for numeric operators when header was mis-specified as a text column (e.g. stale rubric "ประเภท > 50"):
+    #    Prefer numeric columns whose header mentions ยอดขาย / จำนวน / คะแนน / ราคา, then any numeric column with hits.
+    if is_numeric_op and matched_header_col is None:
+        preferred_num_keywords = ("ยอดขาย", "จำนวน", "ชิ้น", "คะแนน", "รายได้", "ราคา")
+        for kw in preferred_num_keywords:
+            for c in range(1, max_c + 1):
+                hk = _norm_header_key(ws.cell(row=header_row, column=c).value)
+                if kw in hk and _col_is_numeric(c) and _col_hits(c) > 0:
+                    return c
+
+    # 4) For text conditions (equals/starts_with/ends_with/contains), if header guess had 0 hits across the entire table,
     #    check if another column actually contains that exact text value!
-    if op in ("equals", "starts_with", "ends_with", "contains", "in"):
+    if not is_numeric_op and op in ("equals", "starts_with", "ends_with", "contains", "in"):
         best_text_col = None
         best_text_hits = 0
         for c in range(1, max_c + 1):
@@ -1152,10 +1177,12 @@ def _resolve_filter_column_index(
     if matched_header_col is not None:
         return matched_header_col
 
-    # 4) Fallback auto-detect column for numeric conditions when no column header was specified
+    # 5) Fallback auto-detect column when no column header matched
     best_col = None
     best_hits = 0
     for c in range(1, max_c + 1):
+        if is_numeric_op and not _col_is_numeric(c):
+            continue
         hits = _col_hits(c)
         if hits > best_hits:
             best_hits = hits
