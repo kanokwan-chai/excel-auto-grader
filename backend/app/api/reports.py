@@ -135,6 +135,8 @@ def _build_class_report_data(
             buckets[4]["count"] += 1
 
     last_rubric_id: str | None = None
+    last_rubric_name: str | None = None
+    last_rubric_version: int | None = None
     sorted_by_recent = sorted(
         results,
         key=lambda item: item[0].graded_at.timestamp() if item[0].graded_at else 0.0,
@@ -145,12 +147,17 @@ def _build_class_report_data(
             rv_obj = db.query(RubricVersion).filter(RubricVersion.id == gr_row.rubric_version_id).first()
             if rv_obj and rv_obj.rubric_id:
                 last_rubric_id = str(rv_obj.rubric_id)
+                last_rubric_version = int(rv_obj.version_number or 1)
+                snap = rv_obj.snapshot_json or {}
+                last_rubric_name = str(snap.get("name") or "")
                 break
 
     summary = {
         "assignment_id": assignment.id,
         "assignment_title": assignment.title,
         "last_rubric_id": last_rubric_id,
+        "last_rubric_name": last_rubric_name,
+        "last_rubric_version": last_rubric_version,
         "max_score": assignment.max_score,
         "pass_score": assignment.pass_score,
         "total_students": len(rows),

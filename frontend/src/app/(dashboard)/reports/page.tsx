@@ -25,6 +25,8 @@ interface ClassReportResponse {
     assignment_id: string;
     assignment_title: string;
     last_rubric_id?: string | null;
+    last_rubric_name?: string | null;
+    last_rubric_version?: number | null;
     max_score: number;
     pass_score: number;
     total_students: number;
@@ -168,15 +170,25 @@ export default function ReportsPage() {
     setRegradeProgress(null);
     const BATCH_SIZE = 10;
     let done = 0;
+    let totalFailed = 0;
+    let lastErrorSample = "";
+    let usedRubricName = "";
+    let usedRubricVer = 0;
     try {
       if (subIds.length > 0) {
-        const totalBatches = Math.ceil(subIds.length / BATCH_SIZE);
         let sharedJobId: string | undefined = undefined;
         for (let i = 0; i < subIds.length; i += BATCH_SIZE) {
           const chunk = subIds.slice(i, i + BATCH_SIZE);
-          const batchNum = Math.floor(i / BATCH_SIZE) + 1;
           setRegradeProgress(`กำลังรีการตรวจ (${done}/${subIds.length} คน)...`);
-          const res: { job_id?: string; processed_files: number; batch_processed?: number } = await apiRequest(
+          const res: {
+            job_id?: string;
+            processed_files: number;
+            batch_processed?: number;
+            failed_files?: number;
+            rubric_name?: string;
+            rubric_version?: number;
+            error_samples?: string[];
+          } = await apiRequest(
             "/grading/run",
             {
               method: "POST",
@@ -191,12 +203,22 @@ export default function ReportsPage() {
           );
           if (res.job_id) sharedJobId = res.job_id;
           done = res.processed_files;
-          void batchNum;
-          void totalBatches;
+          totalFailed = res.failed_files || 0;
+          if (res.rubric_name) usedRubricName = res.rubric_name;
+          if (res.rubric_version) usedRubricVer = res.rubric_version;
+          if (res.error_samples && res.error_samples.length > 0) {
+            lastErrorSample = res.error_samples[0];
+          }
         }
       } else {
         setRegradeProgress("กำลังรีการตรวจทั้งห้อง...");
-        const res = await apiRequest<{ processed_files: number }>("/grading/run", {
+        const res = await apiRequest<{
+          processed_files: number;
+          failed_files?: number;
+          rubric_name?: string;
+          rubric_version?: number;
+          error_samples?: string[];
+        }>("/grading/run", {
           method: "POST",
           body: JSON.stringify({
             assignment_id: assignmentId,
@@ -205,8 +227,23 @@ export default function ReportsPage() {
           }),
         });
         done = res.processed_files;
+        totalFailed = res.failed_files || 0;
+        if (res.rubric_name) usedRubricName = res.rubric_name;
+        if (res.rubric_version) usedRubricVer = res.rubric_version;
+        if (res.error_samples && res.error_samples.length > 0) {
+          lastErrorSample = res.error_samples[0];
+        }
       }
-      toast(`รีการตรวจด้วยเกณฑ์ล่าสุดเรียบร้อยแล้ว (${done} คน) ✨`);
+      if (totalFailed > 0) {
+        toast(
+          `รีการตรวจมีข้อผิดพลาด ${totalFailed}/${done} คน${lastErrorSample ? ` (${lastErrorSample})` : ""}`,
+          "error"
+        );
+      } else {
+        toast(
+          `รีการตรวจเสร็จแล้ว (${done} คน) ด้วยเกณฑ์ "${usedRubricName || "ล่าสุด"}" v${usedRubricVer || ""} ✨`
+        );
+      }
       await loadReport();
     } catch (err) {
       toast(err instanceof Error ? err.message : "รีการตรวจไม่สำเร็จ", "error");
@@ -230,9 +267,8 @@ export default function ReportsPage() {
       setReport(data);
       if (lastSyncedAssignmentRef.current !== assignmentId) {
         lastSyncedAssignmentRef.current = assignmentId;
-        if (!pinnedRubricFromUrlRef.current && data.summary.last_rubric_id) {
-          setRegradeRubricId(data.summary.last_rubric_id);
-        }
+        // Keep user's newly created/updated rubric (rubrics[0]) or URL-pinned rubric;
+        // NEVER forcibly revert dropdown back to an older last_rubric_id!
         pinnedRubricFromUrlRef.current = null;
       }
       setSelectedIds(data.rows.map((r) => r.result_id));
@@ -501,6 +537,11 @@ export default function ReportsPage() {
                 </p>
                 <p className="text-xs text-slate-600">
                   เมื่อแก้ไขเกณฑ์เสร็จ เลือกเกณฑ์ด้านขวาแล้วกดรีการตรวจได้ทันที
+                  {report.summary.last_rubric_name && (
+                    <span className="ml-1.5 inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-900">
+                      ผลคะแนนที่แสดงอยู่ตอนนี้ตรวจด้วย: {report.summary.last_rubric_name} (v{report.summary.last_rubric_version || 1})
+                    </span>
+                  )}
                 </p>
                 <label className="mt-1 inline-flex items-center gap-1.5 text-xs font-semibold text-sky-900 cursor-pointer">
                   <input
@@ -545,6 +586,18 @@ export default function ReportsPage() {
                 </Button>
               </div>
             </div>
+            {(() => {
+              const picked = rubrics.find((r) => r.id === regradeRubricId);
+              if (!picked) return null;
+              return (
+                <div className="rounded-xl border border-sky-200/80 bg-white/90 px-3 py-2 text-[11px] text-slate-700">
+                  <span className="font-bold text-sky-900">
+                    🎯 ข้อเกณฑ์ที่จะใช้ตรวจรอบนี้ ({picked.name} v{picked.current_version} • {picked.items.length} ข้อ):
+                  </span>{" "}
+                  {picked.items.map((it, idx) => `${idx + 1}. ${it.title}${it.sheet_name ? ` [${it.sheet_name}]` : ""}`).join(" • ")}
+                </div>
+              );
+            })()}
             {regradeProgress && (
               <div className="rounded-xl border border-sky-200 bg-white px-3 py-2 text-xs font-semibold text-sky-900 animate-pulse">
                 ⏳ {regradeProgress}

@@ -348,10 +348,17 @@ async def download_drive_files_batch(
                     if mime_type == "application/vnd.google-apps.spreadsheet":
                         url = f"{DRIVE_API_BASE}/files/{fid}/export"
                         params = {"mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+                        resp = await client.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
                     else:
                         url = f"{DRIVE_API_BASE}/files/{fid}"
                         params = {"alt": "media"}
-                    resp = await client.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
+                        resp = await client.get(url, params=params, headers={"Authorization": f"Bearer {token}"})
+                        if resp.status_code == 403 and "fileNotDownloadable" in resp.text:
+                            resp = await client.get(
+                                f"{DRIVE_API_BASE}/files/{fid}/export",
+                                params={"mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+                                headers={"Authorization": f"Bearer {token}"},
+                            )
                     if resp.status_code != 200:
                         out[fid] = GoogleAPIError(
                             f"ไม่สามารถดาวน์โหลดไฟล์จาก Google Drive ({fid}): HTTP {resp.status_code}",
@@ -393,6 +400,12 @@ async def download_drive_excel_file(
                 params={"alt": "media"},
                 headers={"Authorization": f"Bearer {token}"},
             )
+            if resp.status_code == 403 and "fileNotDownloadable" in resp.text:
+                resp = await client.get(
+                    f"{DRIVE_API_BASE}/files/{drive_file_id}/export",
+                    params={"mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
             ext = ".xlsx"
 
         if resp.status_code != 200:

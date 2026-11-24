@@ -746,7 +746,7 @@ async def run_classroom_wizard_grading(
             started_at=datetime.now(timezone.utc),
         )
         db.add(job)
-    db.flush()
+    db.commit()
 
     # Preload reference file path once per batch (instead of querying DB per student)
     ref_file = (
@@ -759,7 +759,12 @@ async def run_classroom_wizard_grading(
         .order_by(ReferenceFile.created_at.desc())
         .first()
     )
-    ref_path = storage_service.get_local_path(ref_file.storage_path, current_teacher.id) if ref_file else None
+    ref_path = None
+    if ref_file:
+        try:
+            ref_path = storage_service.get_local_path(ref_file.storage_path, current_teacher.id)
+        except Exception:
+            ref_path = None
 
     # Download all student Excel files in this batch concurrently from Google Drive (~6x faster!)
     download_targets: list[tuple[str, str | None]] = []

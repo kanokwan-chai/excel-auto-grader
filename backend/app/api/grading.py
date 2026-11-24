@@ -104,7 +104,12 @@ async def run_grading_job(
             started_at=datetime.now(timezone.utc),
         )
         db.add(job)
-    db.flush()
+    db.commit()
+    job_id_str = job.id
+    rubric_ver_id_str = rubric_ver.id
+    rubric_name_str = rubric.name
+    rubric_ver_num = rubric_ver.version_number
+    sub_ids = [s.id for s in submissions]
 
     ref_file = (
         db.query(ReferenceFile)
@@ -116,14 +121,29 @@ async def run_grading_job(
         .order_by(ReferenceFile.created_at.desc())
         .first()
     )
-    ref_path = storage_service.get_local_path(ref_file.storage_path, current_teacher.id) if ref_file else None
+    ref_path = None
+    if ref_file:
+        try:
+            ref_path = storage_service.get_local_path(ref_file.storage_path, current_teacher.id)
+        except Exception:
+            ref_path = None
 
     processed = 0
     failed = 0
     result_ids: list[str] = []
+    error_samples: list[str] = []
 
-    for sub in submissions:
+    for sid in sub_ids:
         try:
+            sub = db.query(Submission).filter(Submission.id == sid).first()
+            if not sub:
+                continue
+            rubric_ver_live = db.query(RubricVersion).filter(RubricVersion.id == rubric_ver_id_str).first()
+            job_live = db.query(GradingJob).filter(GradingJob.id == job_id_str).first()
+            assign_live = db.query(Assignment).filter(Assignment.id == payload.assignment_id).first()
+            if not rubric_ver_live or not assign_live:
+                continue
+
             # Ensure stored file is available locally (if old pre-Supabase path vanished after Render restart, recover once)
             pf = (
                 db.query(SubmissionFile)
@@ -158,10 +178,10 @@ async def run_grading_job(
             res = grade_single_submission(
                 db,
                 owner_user_id=current_teacher.id,
-                assignment=assignment,
+                assignment=assign_live,
                 submission=sub,
-                rubric_version=rubric_ver,
-                grading_job=job,
+                rubric_version=rubric_ver_live,
+                grading_job=job_live,
                 force_regrade_confirmed=payload.force_regrade_confirmed,
                 preloaded_ref_path=ref_path,
                 has_preloaded_ref=True,
@@ -171,29 +191,39 @@ async def run_grading_job(
             if res.status == "error":
                 failed += 1
             result_ids.append(res.id)
-        except Exception:
+        except Exception as exc:
             processed += 1
             failed += 1
+            if len(error_samples) < 3:
+                error_samples.append(f"{type(exc).__name__}: {exc}")
             db.rollback()
 
     gc.collect()
-    job.processed_files = int(job.processed_files or 0) + processed
-    job.failed_files = int(job.failed_files or 0) + failed
-    tot_f = int(job.failed_files or 0)
-    tot_p = int(job.processed_files or 0)
-    job.status = "completed" if tot_f == 0 else ("partial_failed" if tot_p > tot_f else "failed")
-    job.completed_at = datetime.now(timezone.utc)
-    assignment.status = "completed"
+    job_final = db.query(GradingJob).filter(GradingJob.id == job_id_str).first()
+    assign_final = db.query(Assignment).filter(Assignment.id == payload.assignment_id).first()
+    if job_final:
+        job_final.processed_files = int(job_final.processed_files or 0) + processed
+        job_final.failed_files = int(job_final.failed_files or 0) + failed
+        tot_f = int(job_final.failed_files or 0)
+        tot_p = int(job_final.processed_files or 0)
+        job_final.status = "completed" if tot_f == 0 else ("partial_failed" if tot_p > tot_f else "failed")
+        job_final.completed_at = datetime.now(timezone.utc)
+        if error_samples:
+            job_final.error_log = "; ".join(error_samples)
+    if assign_final:
+        assign_final.status = "completed"
     db.commit()
 
     return {
-        "job_id": job.id,
-        "status": job.status,
-        "total_files": job.total_files,
-        "processed_files": job.processed_files,
+        "job_id": job_id_str,
+        "status": job_final.status if job_final else "completed",
+        "total_files": job_final.total_files if job_final else len(sub_ids),
+        "processed_files": job_final.processed_files if job_final else processed,
         "batch_processed": processed,
-        "failed_files": job.failed_files,
-        "rubric_version": rubric_ver.version_number,
+        "failed_files": job_final.failed_files if job_final else failed,
+        "rubric_name": rubric_name_str,
+        "rubric_version": rubric_ver_num,
+        "error_samples": error_samples,
         "result_ids": result_ids,
     }
 
