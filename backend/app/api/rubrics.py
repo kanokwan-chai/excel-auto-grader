@@ -600,23 +600,56 @@ def expand_natural_language_rubric(
             "explicit_points": _extract_points_near(r"ตัวกรอง|กรองข้อมูล|autofilter|filter|คัดกรอง"),
         })
 
-    # 7. Detect Chart
+    # 7. Detect Chart & Chart Elements
     if re.search(r"แผนภูมิ|กราฟ|chart", text, re.IGNORECASE):
-        chart_type = "column"
+        chart_type = "bar_or_column"
         if re.search(r"วงกลม|pie", text, re.IGNORECASE):
             chart_type = "pie"
+        elif re.search(r"โดนัท|doughnut|donut", text, re.IGNORECASE):
+            chart_type = "doughnut"
         elif re.search(r"กราฟเส้น|แผนภูมิเส้น|\bline\b", text, re.IGNORECASE):
             chart_type = "line"
-        elif re.search(r"แท่งแนวนอน", text, re.IGNORECASE):
+        elif re.search(r"พื้นที่|\barea\b", text, re.IGNORECASE):
+            chart_type = "area"
+        elif re.search(r"กระจาย|\bscatter\b", text, re.IGNORECASE):
+            chart_type = "scatter"
+        elif re.search(r"แท่งแนวนอน|\bbar\b", text, re.IGNORECASE):
             chart_type = "bar"
+        elif re.search(r"คอลัมน์|แท่งแนวตั้ง|\bcolumn\b", text, re.IGNORECASE):
+            chart_type = "column"
+
+        chart_cfg: dict[str, Any] = {"chart_type": chart_type}
+        elem_desc: list[str] = [f"ประเภท {chart_type}"]
+        if re.search(r"ชื่อแผนภูมิ|ชื่อกราฟ|หัวเรื่องกราฟ|chart\s*title|องค์ประกอบ", text, re.IGNORECASE):
+            chart_cfg["require_title"] = True
+            elem_desc.append("ชื่อแผนภูมิ")
+        if re.search(r"ชื่อแกน\s*x|แกนแนวนอน|ชื่อแกน|องค์ประกอบ", text, re.IGNORECASE) and chart_type not in ("pie", "doughnut"):
+            chart_cfg["require_x_axis_title"] = True
+            elem_desc.append("ชื่อแกนแนวนอน")
+        if re.search(r"ชื่อแกน\s*y|แกนแนวตั้ง|ชื่อแกน|องค์ประกอบ", text, re.IGNORECASE) and chart_type not in ("pie", "doughnut"):
+            chart_cfg["require_y_axis_title"] = True
+            elem_desc.append("ชื่อแกนแนวตั้ง")
+        if re.search(r"เปอร์เซ็นต์บนกราฟ|แสดง\s*%|ร้อยละบนกราฟ", text, re.IGNORECASE):
+            chart_cfg["require_percent_labels"] = True
+            elem_desc.append("ป้ายเปอร์เซ็นต์ (%)")
+        elif re.search(r"ป้ายกำกับข้อมูล|data\s*labels?|ตัวเลขบนกราฟ|แสดงค่าข้อมูล|องค์ประกอบ", text, re.IGNORECASE):
+            chart_cfg["require_data_labels"] = True
+            elem_desc.append("ป้ายกำกับข้อมูล (Data Labels)")
+        if re.search(r"คำอธิบายแผนภูมิ|legend|สัญลักษณ์แทนข้อมูล|องค์ประกอบ", text, re.IGNORECASE):
+            chart_cfg["require_legend"] = True
+            elem_desc.append("คำอธิบายแผนภูมิ (Legend)")
+        if re.search(r"ตารางข้อมูลใต้กราฟ|data\s*table", text, re.IGNORECASE):
+            chart_cfg["require_data_table"] = True
+            elem_desc.append("ตารางข้อมูลใต้กราฟ")
+
         items.append({
-            "title": f"ตรวจแผนภูมิ ({chart_type})",
-            "description": "ตรวจสอบการสร้างแผนภูมิ ประเภทแผนภูมิ ชื่อแผนภูมิ และช่วงข้อมูล",
+            "title": f"ตรวจแผนภูมิและองค์ประกอบแผนภูมิ ({chart_type})",
+            "description": "ตรวจสอบ: " + ", ".join(elem_desc),
             "category": "chart",
             "sheet_name": default_sheet,
             "target_cell": "",
-            "rule_config": {"chart_type": chart_type},
-            "explicit_points": _extract_points_near(r"แผนภูมิ|กราฟ|chart"),
+            "rule_config": chart_cfg,
+            "explicit_points": _extract_points_near(r"แผนภูมิ|กราฟ|chart|องค์ประกอบ"),
         })
 
     # 8. Detect Added Data / Completeness / Sorting according to instructions
@@ -880,16 +913,41 @@ async def inspect_sample_excel_for_rubric(
             })
             idx += 1
 
-        # 3) Chart Rules
+        # 3) Chart & Chart Elements Ground-Truth Rules from Answer Key!
         for ch in sheet.get("charts", []):
+            ch_cfg: dict[str, Any] = {"chart_type": ch.get("type") or "column"}
+            if ch.get("title"):
+                ch_cfg["require_title"] = True
+                ch_cfg["expected_title"] = ch["title"]
+            elif ch.get("has_title"):
+                ch_cfg["require_title"] = True
+            if ch.get("has_x_axis_title"):
+                ch_cfg["require_x_axis_title"] = True
+                if ch.get("x_axis_title"):
+                    ch_cfg["x_axis_title"] = ch["x_axis_title"]
+            if ch.get("has_y_axis_title"):
+                ch_cfg["require_y_axis_title"] = True
+                if ch.get("y_axis_title"):
+                    ch_cfg["y_axis_title"] = ch["y_axis_title"]
+            if ch.get("has_percent_labels"):
+                ch_cfg["require_percent_labels"] = True
+            elif ch.get("has_data_labels"):
+                ch_cfg["require_data_labels"] = True
+            if ch.get("has_legend"):
+                ch_cfg["require_legend"] = True
+            if ch.get("has_data_table"):
+                ch_cfg["require_data_table"] = True
+            if int(ch.get("series_count") or 0) > 1:
+                ch_cfg["min_series_count"] = int(ch["series_count"])
+
             suggested_items.append({
                 "order_index": idx,
-                "title": f"ตรวจแผนภูมิ ({ch.get('title') or ch.get('type')}) แท็บ {sname}",
-                "description": "ตรวจสอบการสร้างแผนภูมิเทียบต้นฉบับ",
+                "title": f"ตรวจแผนภูมิและองค์ประกอบ ({ch.get('title') or ch.get('type')}) แท็บ {sname}",
+                "description": "ตรวจสอบประเภทแผนภูมิและองค์ประกอบครบตามไฟล์เฉลย",
                 "category": "chart",
                 "sheet_name": sname,
                 "target_cell": "",
-                "rule_config": {"expected_title": ch.get("title") or ""},
+                "rule_config": ch_cfg,
                 "max_points": 2.0,
                 "min_points": 0.0,
                 "allow_partial_credit": True,

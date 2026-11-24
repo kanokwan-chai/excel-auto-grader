@@ -1,4 +1,4 @@
-"""Chart Checker: validates chart type, title, data range, axis titles, series."""
+"""Chart & Chart Elements Checker: validates chart type, title, axis titles, data labels, legend, data table, gridlines, data range, and series."""
 
 from __future__ import annotations
 
@@ -19,7 +19,16 @@ CHART_TYPE_MAP = {
     "doughnutchart": "doughnut",
     "scatterchart": "scatter",
     "areachart": "area",
+    "areachart3d": "area",
     "radarchart": "radar",
+}
+
+LEGEND_POS_TH = {
+    "r": "ด้านขวา (Right)",
+    "b": "ด้านล่าง (Bottom)",
+    "t": "ด้านบน (Top)",
+    "l": "ด้านซ้าย (Left)",
+    "tr": "มุมบนขวา (Top Right)",
 }
 
 
@@ -29,20 +38,40 @@ def _extract_title_text(title_obj: Any) -> str:
     if isinstance(title_obj, str):
         return title_obj.strip()
     tx = getattr(title_obj, "tx", None)
-    if tx and getattr(tx, "rich", None):
-        parts: list[str] = []
-        for p in tx.rich.p or []:
-            for r in p.r or []:
-                if getattr(r, "t", None):
-                    parts.append(r.t)
-        return "".join(parts).strip()
+    if tx:
+        if getattr(tx, "rich", None):
+            parts: list[str] = []
+            for p in tx.rich.p or []:
+                for r in p.r or []:
+                    if getattr(r, "t", None):
+                        parts.append(r.t)
+            if parts:
+                return "".join(parts).strip()
+        str_ref = getattr(tx, "strRef", None)
+        if str_ref:
+            # Title linked to a cell formula (e.g. =Sheet1!$A$1)
+            if getattr(str_ref, "strCache", None) and getattr(str_ref.strCache, "pt", None):
+                pts = [pt.v for pt in str_ref.strCache.pt if getattr(pt, "v", None)]
+                if pts:
+                    return "".join(pts).strip()
+            if getattr(str_ref, "f", None):
+                return str(str_ref.f).strip()
     return ""
+
+
+def _has_axis_or_chart_title(title_obj: Any) -> bool:
+    if title_obj is None:
+        return False
+    txt = _extract_title_text(title_obj)
+    if txt:
+        return True
+    # Even if openpyxl loads default rich text placeholder without cached string, presence of Title object means enabled
+    return True
 
 
 def _extract_chart_type(chart: Any) -> str:
     cls_name = type(chart).__name__.lower()
     mapped = CHART_TYPE_MAP.get(cls_name, cls_name)
-    # Distinguish Bar (horizontal) vs Column (vertical) when type='col'
     if mapped == "bar" and getattr(chart, "type", None) == "col":
         return "column"
     return mapped
@@ -63,25 +92,92 @@ def _extract_series_ranges(chart: Any) -> list[str]:
     return ranges
 
 
+def _inspect_data_labels(chart: Any) -> tuple[bool, bool]:
+    """Return (has_any_data_labels, has_percent_labels) across chart-level and series-level dataLabels."""
+    has_any = False
+    has_pct = False
+
+    def _check_dl(dl: Any) -> None:
+        nonlocal has_any, has_pct
+        if dl is None:
+            return
+        if getattr(dl, "delete", False) is True:
+            return
+        show_val = getattr(dl, "showVal", None)
+        show_pct = getattr(dl, "showPercent", None)
+        show_cat = getattr(dl, "showCatName", None)
+        show_ser = getattr(dl, "showSerName", None)
+        if any(flag is True for flag in (show_val, show_pct, show_cat, show_ser)):
+            has_any = True
+        elif all(flag is None for flag in (show_val, show_pct, show_cat, show_ser)):
+            # DataLabelList object exists without delete=True -> Excel added data labels with default settings
+            has_any = True
+        if show_pct is True:
+            has_pct = True
+
+    _check_dl(getattr(chart, "dataLabels", None))
+    for s in getattr(chart, "series", []) or []:
+        _check_dl(getattr(s, "dLbls", None) or getattr(s, "data_labels", None))
+
+    return has_any, has_pct
+
+
+def inspect_chart_elements_summary(chart: Any) -> dict[str, Any]:
+    """Return a structured summary of a chart and all its elements (used by Answer Key extractor & checker)."""
+    c_type = _extract_chart_type(chart)
+    title_txt = _extract_title_text(getattr(chart, "title", None))
+    has_title = bool(title_txt) or (getattr(chart, "title", None) is not None and not getattr(chart, "autoTitleDeleted", False))
+
+    x_ax = getattr(chart, "x_axis", None)
+    y_ax = getattr(chart, "y_axis", None)
+    x_title = _extract_title_text(getattr(x_ax, "title", None)) if x_ax else ""
+    y_title = _extract_title_text(getattr(y_ax, "title", None)) if y_ax else ""
+    has_x_title = _has_axis_or_chart_title(getattr(x_ax, "title", None)) if x_ax else False
+    has_y_title = _has_axis_or_chart_title(getattr(y_ax, "title", None)) if y_ax else False
+
+    has_dl, has_pct = _inspect_data_labels(chart)
+    leg = getattr(chart, "legend", None)
+    has_legend = leg is not None
+    leg_pos = getattr(leg, "position", None) if leg else None
+
+    plot_area = getattr(chart, "plot_area", None)
+    has_dtable = bool(plot_area and getattr(plot_area, "dTable", None) is not None)
+    has_gridlines = bool(
+        (y_ax and getattr(y_ax, "majorGridlines", None) is not None)
+        or (x_ax and getattr(x_ax, "majorGridlines", None) is not None)
+    )
+
+    return {
+        "type": c_type,
+        "grouping": getattr(chart, "grouping", None),
+        "title": title_txt,
+        "has_title": has_title,
+        "has_x_axis_title": has_x_title,
+        "x_axis_title": x_title,
+        "has_y_axis_title": has_y_title,
+        "y_axis_title": y_title,
+        "has_data_labels": has_dl,
+        "has_percent_labels": has_pct,
+        "has_legend": has_legend,
+        "legend_position": leg_pos,
+        "has_data_table": has_dtable,
+        "has_gridlines": has_gridlines,
+        "series_count": len(getattr(chart, "series", []) or []),
+        "series_ranges": _extract_series_ranges(chart),
+    }
+
+
 def check_chart_item(
     item: RubricItemConfig,
     student_wb: Workbook,
 ) -> RubricItemResult:
     """
-    Validate Excel charts on the target worksheet.
-    Supported rule_config keys:
-    - chart_type: "bar" | "column" | "line" | "pie" | "scatter" | "area" | "doughnut"
-    - expected_title: str (substring or exact match)
-    - required_data_range: str (e.g. "B2:B10" or "Sheet1!B2:B10")
-    - x_axis_title: str
-    - y_axis_title: str
-    - min_series_count: int
+    Validate Excel charts and Chart Elements (องค์ประกอบของแผนภูมิ) on the target worksheet.
     """
     from excel_engine.readers.excel_reader import resolve_worksheet_forgiving
 
     cfg = item.rule_config or {}
     ws, sheet_name = resolve_worksheet_forgiving(student_wb, item.sheet_name)
-    # If target sheet has no charts, also check if any other sheet has charts (in case student placed chart on a Chart sheet!)
     if ws is None:
         err = GradingErrorRecord(
             error_code="MISSING_WORKSHEET",
@@ -119,7 +215,7 @@ def check_chart_item(
             message_th=f"ไม่พบแผนภูมิ (Chart) ในแผ่นงาน '{sheet_name}'",
             expected_detail=cfg.get("chart_type", "Chart"),
             actual_detail="ไม่มีแผนภูมิ",
-            fix_suggestion_th="สร้างแผนภูมิจากช่วงข้อมูลที่กำหนดผ่านเมนู Insert > Charts",
+            fix_suggestion_th="คลุมข้อมูลแล้วสร้างแผนภูมิผ่านเมนู Insert > Charts",
         )
         return RubricItemResult(
             rubric_item_id=item.id,
@@ -135,21 +231,34 @@ def check_chart_item(
         )
 
     chart_index = int(cfg.get("chart_index", 0))
+    # If multiple charts exist and chart_type is specified, prefer the chart matching expected chart_type
+    expected_type_hint = str(cfg.get("chart_type") or "").lower().strip()
     chart = charts[chart_index] if chart_index < len(charts) else charts[0]
+    if expected_type_hint and len(charts) > 1:
+        for ch_cand in charts:
+            ct_cand = _extract_chart_type(ch_cand)
+            if ct_cand == expected_type_hint or (expected_type_hint == "bar_or_column" and ct_cand in {"bar", "column"}):
+                chart = ch_cand
+                break
+
+    info = inspect_chart_elements_summary(chart)
+    actual_type = info["type"]
+    actual_title = info["title"]
+    actual_ranges = info["series_ranges"]
 
     total = 0
     passed = 0
     errors: list[GradingErrorRecord] = []
 
-    actual_type = _extract_chart_type(chart)
-    actual_title = _extract_title_text(getattr(chart, "title", None))
-    actual_ranges = _extract_series_ranges(chart)
-
-    if "chart_type" in cfg:
+    # 1. Chart Type
+    if cfg.get("chart_type"):
         total += 1
-        expected_type = str(cfg["chart_type"]).lower()
-        # Accept bar/column equivalence only if user specifies 'bar_or_column'
-        if actual_type == expected_type or (expected_type == "bar_or_column" and actual_type in {"bar", "column"}):
+        expected_type = str(cfg["chart_type"]).lower().strip()
+        if (
+            actual_type == expected_type
+            or (expected_type == "bar_or_column" and actual_type in {"bar", "column"})
+            or (expected_type in {"pie", "doughnut"} and actual_type == expected_type)
+        ):
             passed += 1
         else:
             errors.append(
@@ -157,16 +266,17 @@ def check_chart_item(
                     error_code="WRONG_CHART_TYPE",
                     severity="error",
                     sheet_name=sheet_name,
-                    message_th=f"ประเภทแผนภูมิไม่ถูกต้อง (ใช้แบบ '{actual_type}' แต่โจทย์กำหนด '{expected_type}')",
+                    message_th=f"ประเภทแผนภูมิไม่ถูกต้อง (ส่งมาเป็น '{actual_type}' แต่กำหนด '{expected_type}')",
                     expected_detail=expected_type,
                     actual_detail=actual_type,
-                    fix_suggestion_th=f"เปลี่ยนประเภทแผนภูมิเป็น {expected_type}",
+                    fix_suggestion_th=f"คลิกขวาที่แผนภูมิ > Change Chart Type แล้วเลือกแบบ {expected_type}",
                 )
             )
 
-    if "expected_title" in cfg:
+    # 2. Chart Title (existence and/or specific text)
+    exp_title = str(cfg.get("expected_title") or "").strip()
+    if exp_title:
         total += 1
-        exp_title = str(cfg["expected_title"]).strip()
         if exp_title.lower() in actual_title.lower():
             passed += 1
         else:
@@ -175,16 +285,191 @@ def check_chart_item(
                     error_code="WRONG_CHART_TITLE",
                     severity="warning",
                     sheet_name=sheet_name,
-                    message_th=f"ชื่อแผนภูมิไม่ตรง (พบ '{actual_title or '(ว่าง)'}' ควรมีคำว่า '{exp_title}')",
+                    message_th=f"ชื่อแผนภูมิ (Chart Title) ไม่ตรง (พบ '{actual_title or '(ไม่มีชื่อ)'}' ควรมีคำว่า '{exp_title}')",
                     expected_detail=exp_title,
                     actual_detail=actual_title or "(ไม่มีชื่อ)",
-                    fix_suggestion_th=f"ตั้งชื่อแผนภูมิเป็น '{exp_title}'",
+                    fix_suggestion_th=f"เพิ่มและแก้ไขชื่อแผนภูมิ (Chart Title) ให้มีคำว่า '{exp_title}'",
+                )
+            )
+    elif cfg.get("require_title"):
+        total += 1
+        if info["has_title"] and actual_title.lower() not in {"chart title", "ชื่อแผนภูมิ"}:
+            passed += 1
+        else:
+            errors.append(
+                GradingErrorRecord(
+                    error_code="MISSING_CHART_TITLE",
+                    severity="warning",
+                    sheet_name=sheet_name,
+                    message_th="ยังไม่ได้ตั้งชื่อแผนภูมิ (Chart Title) หรือปล่อยเป็นข้อความเริ่มต้น",
+                    expected_detail="มีชื่อแผนภูมิที่สื่อความหมาย",
+                    actual_detail=actual_title or "(ไม่มีชื่อแผนภูมิ)",
+                    fix_suggestion_th="กดปุ่ม [+] มุมบนขวาของแผนภูมิ > ติ๊ก Chart Title แล้วพิมพ์ชื่อเรื่องของกราฟ",
                 )
             )
 
-    if "required_data_range" in cfg:
+    # 3. Horizontal Axis Title (X-Axis)
+    exp_x = str(cfg.get("x_axis_title") or "").strip()
+    if exp_x:
         total += 1
-        req_range = str(cfg["required_data_range"]).upper().replace("$", "")
+        if exp_x.lower() in info["x_axis_title"].lower():
+            passed += 1
+        else:
+            errors.append(
+                GradingErrorRecord(
+                    error_code="WRONG_X_AXIS_TITLE",
+                    severity="warning",
+                    sheet_name=sheet_name,
+                    message_th=f"ชื่อแกนแนวนอน (แกน X) ไม่ตรง (พบ '{info['x_axis_title'] or '(ไม่มี)'}' ควรมี '{exp_x}')",
+                    fix_suggestion_th=f"กด [+] > Axis Titles > แกนแนวนอน แล้วตั้งชื่อเป็น '{exp_x}'",
+                )
+            )
+    elif cfg.get("require_x_axis_title"):
+        total += 1
+        if info["has_x_axis_title"] and info["x_axis_title"].lower() not in {"axis title", "ชื่อแกน"}:
+            passed += 1
+        else:
+            errors.append(
+                GradingErrorRecord(
+                    error_code="MISSING_X_AXIS_TITLE",
+                    severity="warning",
+                    sheet_name=sheet_name,
+                    message_th="ยังไม่ได้ใส่ชื่อแกนแนวนอน (Horizontal Axis Title / แกน X)",
+                    fix_suggestion_th="กดปุ่ม [+] ข้างแผนภูมิ > ติ๊ก Axis Titles (ชื่อแกน) แล้วพิมพ์ชื่อแกนแนวนอน",
+                )
+            )
+
+    # 4. Vertical Axis Title (Y-Axis)
+    exp_y = str(cfg.get("y_axis_title") or "").strip()
+    if exp_y:
+        total += 1
+        if exp_y.lower() in info["y_axis_title"].lower():
+            passed += 1
+        else:
+            errors.append(
+                GradingErrorRecord(
+                    error_code="WRONG_Y_AXIS_TITLE",
+                    severity="warning",
+                    sheet_name=sheet_name,
+                    message_th=f"ชื่อแกนแนวตั้ง (แกน Y) ไม่ตรง (พบ '{info['y_axis_title'] or '(ไม่มี)'}' ควรมี '{exp_y}')",
+                    fix_suggestion_th=f"กด [+] > Axis Titles > แกนแนวตั้ง แล้วตั้งชื่อเป็น '{exp_y}'",
+                )
+            )
+    elif cfg.get("require_y_axis_title"):
+        total += 1
+        if info["has_y_axis_title"] and info["y_axis_title"].lower() not in {"axis title", "ชื่อแกน"}:
+            passed += 1
+        else:
+            errors.append(
+                GradingErrorRecord(
+                    error_code="MISSING_Y_AXIS_TITLE",
+                    severity="warning",
+                    sheet_name=sheet_name,
+                    message_th="ยังไม่ได้ใส่ชื่อแกนแนวตั้ง (Vertical Axis Title / แกน Y)",
+                    fix_suggestion_th="กดปุ่ม [+] ข้างแผนภูมิ > ติ๊ก Axis Titles (ชื่อแกน) แล้วพิมพ์ชื่อแกนแนวตั้ง",
+                )
+            )
+
+    # 5. Data Labels & Percentage Labels
+    if cfg.get("require_percent_labels"):
+        total += 1
+        if info["has_percent_labels"]:
+            passed += 1
+        else:
+            errors.append(
+                GradingErrorRecord(
+                    error_code="MISSING_PERCENT_DATA_LABELS",
+                    severity="warning",
+                    sheet_name=sheet_name,
+                    message_th="ยังไม่ได้แสดงค่าเปอร์เซ็นต์ (%) บนป้ายกำกับข้อมูลของแผนภูมิ",
+                    fix_suggestion_th="กด [+] > Data Labels > More Options > ติ๊กถูกช่อง Percentage (เปอร์เซ็นต์)",
+                )
+            )
+    elif cfg.get("require_data_labels"):
+        total += 1
+        if info["has_data_labels"]:
+            passed += 1
+        else:
+            errors.append(
+                GradingErrorRecord(
+                    error_code="MISSING_DATA_LABELS",
+                    severity="warning",
+                    sheet_name=sheet_name,
+                    message_th="ยังไม่ได้เปิดแสดงป้ายกำกับข้อมูล (Data Labels / ตัวเลขบนกราฟ)",
+                    fix_suggestion_th="กดปุ่ม [+] ข้างแผนภูมิ > ติ๊กถูกช่อง Data Labels (ป้ายกำกับข้อมูล)",
+                )
+            )
+
+    # 6. Legend & Legend Position
+    if cfg.get("require_legend") or cfg.get("legend_position"):
+        total += 1
+        if not info["has_legend"]:
+            errors.append(
+                GradingErrorRecord(
+                    error_code="MISSING_CHART_LEGEND",
+                    severity="warning",
+                    sheet_name=sheet_name,
+                    message_th="ยังไม่ได้เปิดแสดงคำอธิบายแผนภูมิ (Legend)",
+                    fix_suggestion_th="กดปุ่ม [+] ข้างแผนภูมิ > ติ๊กถูกช่อง Legend (คำอธิบายแผนภูมิ)",
+                )
+            )
+        elif cfg.get("legend_position"):
+            exp_pos = str(cfg["legend_position"]).lower().strip()
+            act_pos = str(info["legend_position"] or "r").lower().strip()
+            if act_pos == exp_pos:
+                passed += 1
+            else:
+                errors.append(
+                    GradingErrorRecord(
+                        error_code="WRONG_LEGEND_POSITION",
+                        severity="warning",
+                        sheet_name=sheet_name,
+                        message_th=(
+                            f"ตำแหน่งคำอธิบายแผนภูมิ (Legend) ไม่ตรง "
+                            f"(อยู่ที่ {LEGEND_POS_TH.get(act_pos, act_pos)} ควรอยู่ที่ {LEGEND_POS_TH.get(exp_pos, exp_pos)})"
+                        ),
+                        fix_suggestion_th=f"กด [+] > Legend > เลือกตำแหน่ง {LEGEND_POS_TH.get(exp_pos, exp_pos)}",
+                    )
+                )
+        else:
+            passed += 1
+
+    # 7. Data Table below chart
+    if cfg.get("require_data_table"):
+        total += 1
+        if info["has_data_table"]:
+            passed += 1
+        else:
+            errors.append(
+                GradingErrorRecord(
+                    error_code="MISSING_CHART_DATA_TABLE",
+                    severity="warning",
+                    sheet_name=sheet_name,
+                    message_th="ยังไม่ได้เปิดแสดงตารางข้อมูลใต้แผนภูมิ (Data Table)",
+                    fix_suggestion_th="กดปุ่ม [+] ข้างแผนภูมิ > ติ๊กถูกช่อง Data Table (ตารางข้อมูล)",
+                )
+            )
+
+    # 8. Gridlines
+    if cfg.get("require_gridlines"):
+        total += 1
+        if info["has_gridlines"]:
+            passed += 1
+        else:
+            errors.append(
+                GradingErrorRecord(
+                    error_code="MISSING_CHART_GRIDLINES",
+                    severity="warning",
+                    sheet_name=sheet_name,
+                    message_th="ยังไม่ได้เปิดแสดงเส้นตารางในแผนภูมิ (Gridlines)",
+                    fix_suggestion_th="กดปุ่ม [+] ข้างแผนภูมิ > ติ๊กถูกช่อง Gridlines (เส้นตาราง)",
+                )
+            )
+
+    # 9. Data Range & Series Count
+    if cfg.get("required_data_range"):
+        total += 1
+        req_range = str(cfg["required_data_range"]).upper().replace("$", "").strip()
         if any(req_range in r for r in actual_ranges):
             passed += 1
         else:
@@ -196,45 +481,13 @@ def check_chart_item(
                     message_th=f"ช่วงข้อมูลของแผนภูมิไม่ตรงกับที่กำหนด ({req_range})",
                     expected_detail=req_range,
                     actual_detail=", ".join(actual_ranges) or "(ไม่พบช่วงข้อมูล)",
-                    fix_suggestion_th=f"เลือกช่วงข้อมูลแผนภูมิให้ครอบคลุม {req_range}",
+                    fix_suggestion_th=f"คลิกขวาที่แผนภูมิ > Select Data แล้วเลือกช่วงข้อมูลให้ครอบคลุม {req_range}",
                 )
             )
 
-    if "x_axis_title" in cfg:
+    if cfg.get("min_series_count"):
         total += 1
-        x_title = _extract_title_text(getattr(getattr(chart, "x_axis", None), "title", None))
-        if str(cfg["x_axis_title"]).lower() in x_title.lower():
-            passed += 1
-        else:
-            errors.append(
-                GradingErrorRecord(
-                    error_code="WRONG_X_AXIS_TITLE",
-                    severity="warning",
-                    sheet_name=sheet_name,
-                    message_th=f"ชื่อแกน X ไม่ตรง (พบ '{x_title}', ควรเป็น '{cfg['x_axis_title']}')",
-                    fix_suggestion_th=f"เพิ่มชื่อแกน X เป็น '{cfg['x_axis_title']}'",
-                )
-            )
-
-    if "y_axis_title" in cfg:
-        total += 1
-        y_title = _extract_title_text(getattr(getattr(chart, "y_axis", None), "title", None))
-        if str(cfg["y_axis_title"]).lower() in y_title.lower():
-            passed += 1
-        else:
-            errors.append(
-                GradingErrorRecord(
-                    error_code="WRONG_Y_AXIS_TITLE",
-                    severity="warning",
-                    sheet_name=sheet_name,
-                    message_th=f"ชื่อแกน Y ไม่ตรง (พบ '{y_title}', ควรเป็น '{cfg['y_axis_title']}')",
-                    fix_suggestion_th=f"เพิ่มชื่อแกน Y เป็น '{cfg['y_axis_title']}'",
-                )
-            )
-
-    if "min_series_count" in cfg:
-        total += 1
-        series_cnt = len(getattr(chart, "series", []) or [])
+        series_cnt = info["series_count"]
         if series_cnt >= int(cfg["min_series_count"]):
             passed += 1
         else:
@@ -243,31 +496,32 @@ def check_chart_item(
                     error_code="INSUFFICIENT_CHART_SERIES",
                     severity="warning",
                     sheet_name=sheet_name,
-                    message_th=f"จำนวนชุดข้อมูลในแผนภูมิไม่ครบ ({series_cnt} < {cfg['min_series_count']})",
+                    message_th=f"จำนวนชุดข้อมูล (Series) ในแผนภูมิไม่ครบ ({series_cnt} ชุด ควรมีอย่างน้อย {cfg['min_series_count']} ชุด)",
+                    fix_suggestion_th="คลิกขวาที่แผนภูมิ > Select Data เพื่อเลือกชุดข้อมูลให้ครบทุกคอลัมน์ที่เปรียบเทียบ",
                 )
             )
 
     if total == 0:
-        # Chart existence alone satisfied the rule
         total = 1
         passed = 1
 
     all_passed = passed == total
+    err_summary = "; ".join(e.message_th for e in errors[:3]) if errors else ""
     if all_passed:
         earned = item.max_points
-        reason = f"แผนภูมิถูกต้องครบทั้ง {total} เงื่อนไข ({actual_type})"
+        reason = f"แผนภูมิและองค์ประกอบถูกต้องครบทั้ง {total} รายการ ({actual_type})"
         suggestion = None
     elif item.zero_on_error:
         earned = 0.0
-        reason = f"แผนภูมิไม่ผ่านเกณฑ์ ({passed}/{total}) — เกณฑ์กำหนดให้ได้ 0 คะแนน"
+        reason = f"แผนภูมิไม่ผ่านเกณฑ์ ({passed}/{total} รายการ): {err_summary}"
         suggestion = errors[0].fix_suggestion_th if errors else None
     elif item.allow_partial_credit:
         earned = round(item.max_points * (passed / total), 2)
-        reason = f"แผนภูมิผ่านบางส่วน {passed}/{total} เงื่อนไข"
+        reason = f"แผนภูมิผ่านบางส่วน {passed}/{total} รายการ: {err_summary}"
         suggestion = errors[0].fix_suggestion_th if errors else None
     else:
         earned = 0.0
-        reason = errors[0].message_th if errors else "แผนภูมิไม่ถูกต้อง"
+        reason = err_summary or "แผนภูมิไม่ถูกต้อง"
         suggestion = errors[0].fix_suggestion_th if errors else None
 
     return RubricItemResult(
@@ -278,10 +532,8 @@ def check_chart_item(
         deducted_points=round(item.max_points - earned, 2),
         max_points=item.max_points,
         passed=all_passed,
-        expected_value=cfg.get("chart_type"),
-        actual_value=actual_type,
         reason=reason,
         suggestion=suggestion,
-        evidence={"chart_type": actual_type, "chart_title": actual_title, "series_ranges": actual_ranges},
+        evidence={"chart_info": info},
         errors=errors,
     )

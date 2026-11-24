@@ -271,11 +271,10 @@ def extract_workbook_metadata(file_path: str | Path) -> dict[str, Any]:
             # Use first-column keys only if they are unique across all data rows (like Product ID / Student Code)
             unique_first_col = len(all_keys) > 0 and len(set(all_keys)) == len(all_keys)
 
+            from excel_engine.chart_checker.checker import inspect_chart_elements_summary
+
             charts = [
-                {
-                    "type": type(ch).__name__,
-                    "title": _extract_chart_title_simple(ch),
-                }
+                inspect_chart_elements_summary(ch)
                 for ch in getattr(f_ws, "_charts", [])
             ]
 

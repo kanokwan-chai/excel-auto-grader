@@ -1332,20 +1332,221 @@ export default function RubricsPage() {
                   )}
 
                   {it.category === "chart" && (
-                    <div className="flex flex-wrap items-center gap-2 rounded-xl bg-[#F4F9FF] border border-[#D6E8FC] p-2.5 text-xs">
-                      <span className="font-bold text-[#164E78]">ประเภทแผนภูมิ:</span>
-                      <Select
-                        value={String(it.rule_config.chart_type || "column")}
-                        onChange={(e) =>
-                          updateItem(idx, { rule_config: { ...it.rule_config, chart_type: e.target.value } })
-                        }
-                        className="h-8 w-48 text-xs bg-white"
-                      >
-                        <option value="column">กราฟแท่งแนวตั้ง (Column)</option>
-                        <option value="bar">กราฟแท่งแนวนอน (Bar)</option>
-                        <option value="pie">กราฟวงกลม (Pie)</option>
-                        <option value="line">กราฟเส้น (Line)</option>
-                      </Select>
+                    <div className="rounded-xl bg-[#F4F9FF] border border-[#D6E8FC] p-3 space-y-2.5 text-xs">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-bold text-[#164E78]">แท็บ:</span>
+                        {sampleInfo && sampleInfo.sheet_names.length > 0 ? (
+                          <Select
+                            value={it.sheet_name || ""}
+                            onChange={(e) => updateItem(idx, { sheet_name: e.target.value })}
+                            className="h-8 w-36 text-xs bg-white"
+                          >
+                            <option value="">(หาทุกแท็บ)</option>
+                            {sampleInfo.sheet_names.map((sn) => (
+                              <option key={sn} value={sn}>
+                                {sn}
+                              </option>
+                            ))}
+                          </Select>
+                        ) : (
+                          <Input
+                            value={it.sheet_name || ""}
+                            onChange={(e) => updateItem(idx, { sheet_name: e.target.value })}
+                            placeholder="เว้นว่าง = หาทุกแท็บ"
+                            className="h-8 w-36 text-xs bg-white"
+                          />
+                        )}
+
+                        <span className="font-bold text-[#164E78]">ประเภทแผนภูมิ:</span>
+                        <Select
+                          value={String(it.rule_config.chart_type || "bar_or_column")}
+                          onChange={(e) =>
+                            updateItem(idx, { rule_config: { ...it.rule_config, chart_type: e.target.value } })
+                          }
+                          className="h-8 w-52 text-xs bg-white"
+                        >
+                          <option value="bar_or_column">คอลัมน์หรือแท่งก็ได้ (ยืดหยุ่น)</option>
+                          <option value="column">แผนภูมิคอลัมน์แนวตั้ง (Column)</option>
+                          <option value="bar">แผนภูมิแท่งแนวนอน (Bar)</option>
+                          <option value="pie">แผนภูมิวงกลม (Pie)</option>
+                          <option value="doughnut">แผนภูมิโดนัท (Doughnut)</option>
+                          <option value="line">แผนภูมิเส้น (Line)</option>
+                          <option value="area">แผนภูมิพื้นที่ (Area)</option>
+                          <option value="scatter">แผนภูมิกระจาย (XY Scatter)</option>
+                        </Select>
+
+                        <span className="font-bold text-[#164E78]">ช่วงข้อมูล:</span>
+                        <Input
+                          value={String(it.rule_config.required_data_range || "")}
+                          onChange={(e) =>
+                            updateItem(idx, {
+                              rule_config: { ...it.rule_config, required_data_range: e.target.value },
+                            })
+                          }
+                          placeholder="เช่น A1:B10 (ไม่บังคับ)"
+                          className="h-8 w-36 text-xs bg-white font-mono"
+                        />
+                      </div>
+
+                      <div className="pt-1.5 border-t border-[#DCEBFA] space-y-2">
+                        <p className="font-bold text-[#164E78]">
+                          📌 เลือกองค์ประกอบของแผนภูมิที่ต้องการตรวจ (Chart Elements):
+                        </p>
+                        <div className="grid gap-2 sm:grid-cols-3">
+                          <label className="inline-flex items-center gap-1.5 font-medium text-slate-700 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(it.rule_config.require_title || it.rule_config.expected_title)}
+                              onChange={(e) =>
+                                updateItem(idx, {
+                                  rule_config: {
+                                    ...it.rule_config,
+                                    require_title: e.target.checked,
+                                    ...(e.target.checked ? {} : { expected_title: "" }),
+                                  },
+                                })
+                              }
+                            />
+                            ชื่อแผนภูมิ (Chart Title)
+                          </label>
+
+                          <label className="inline-flex items-center gap-1.5 font-medium text-slate-700 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(it.rule_config.require_x_axis_title || it.rule_config.x_axis_title)}
+                              onChange={(e) =>
+                                updateItem(idx, {
+                                  rule_config: {
+                                    ...it.rule_config,
+                                    require_x_axis_title: e.target.checked,
+                                    ...(e.target.checked ? {} : { x_axis_title: "" }),
+                                  },
+                                })
+                              }
+                            />
+                            ชื่อแกนแนวนอน (แกน X)
+                          </label>
+
+                          <label className="inline-flex items-center gap-1.5 font-medium text-slate-700 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(it.rule_config.require_y_axis_title || it.rule_config.y_axis_title)}
+                              onChange={(e) =>
+                                updateItem(idx, {
+                                  rule_config: {
+                                    ...it.rule_config,
+                                    require_y_axis_title: e.target.checked,
+                                    ...(e.target.checked ? {} : { y_axis_title: "" }),
+                                  },
+                                })
+                              }
+                            />
+                            ชื่อแกนแนวตั้ง (แกน Y)
+                          </label>
+
+                          <label className="inline-flex items-center gap-1.5 font-medium text-slate-700 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(it.rule_config.require_data_labels)}
+                              onChange={(e) =>
+                                updateItem(idx, {
+                                  rule_config: { ...it.rule_config, require_data_labels: e.target.checked },
+                                })
+                              }
+                            />
+                            ป้ายกำกับข้อมูล (Data Labels)
+                          </label>
+
+                          <label className="inline-flex items-center gap-1.5 font-medium text-slate-700 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(it.rule_config.require_percent_labels)}
+                              onChange={(e) =>
+                                updateItem(idx, {
+                                  rule_config: { ...it.rule_config, require_percent_labels: e.target.checked },
+                                })
+                              }
+                            />
+                            แสดงเปอร์เซ็นต์ % (กราฟวงกลม)
+                          </label>
+
+                          <label className="inline-flex items-center gap-1.5 font-medium text-slate-700 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(it.rule_config.require_legend || it.rule_config.legend_position)}
+                              onChange={(e) =>
+                                updateItem(idx, {
+                                  rule_config: {
+                                    ...it.rule_config,
+                                    require_legend: e.target.checked,
+                                    ...(e.target.checked ? {} : { legend_position: "" }),
+                                  },
+                                })
+                              }
+                            />
+                            คำอธิบายแผนภูมิ (Legend)
+                          </label>
+
+                          <label className="inline-flex items-center gap-1.5 font-medium text-slate-700 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(it.rule_config.require_data_table)}
+                              onChange={(e) =>
+                                updateItem(idx, {
+                                  rule_config: { ...it.rule_config, require_data_table: e.target.checked },
+                                })
+                              }
+                            />
+                            ตารางข้อมูลใต้กราฟ (Data Table)
+                          </label>
+
+                          <label className="inline-flex items-center gap-1.5 font-medium text-slate-700 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(it.rule_config.require_gridlines)}
+                              onChange={(e) =>
+                                updateItem(idx, {
+                                  rule_config: { ...it.rule_config, require_gridlines: e.target.checked },
+                                })
+                              }
+                            />
+                            เส้นตารางในกราฟ (Gridlines)
+                          </label>
+                        </div>
+
+                        {/* Optional specific title / legend position inputs when checked */}
+                        <div className="flex flex-wrap items-center gap-2 pt-1">
+                          {Boolean(it.rule_config.require_title || it.rule_config.expected_title) && (
+                            <Input
+                              value={String(it.rule_config.expected_title || "")}
+                              onChange={(e) =>
+                                updateItem(idx, {
+                                  rule_config: { ...it.rule_config, expected_title: e.target.value },
+                                })
+                              }
+                              placeholder="คำที่ต้องมีในชื่อแผนภูมิ (เว้นว่าง = ตั้งชื่ออะไรก็ได้)"
+                              className="h-8 w-72 text-xs bg-white"
+                            />
+                          )}
+                          {Boolean(it.rule_config.require_legend || it.rule_config.legend_position) && (
+                            <Select
+                              value={String(it.rule_config.legend_position || "")}
+                              onChange={(e) =>
+                                updateItem(idx, {
+                                  rule_config: { ...it.rule_config, legend_position: e.target.value },
+                                })
+                              }
+                              className="h-8 w-48 text-xs bg-white"
+                            >
+                              <option value="">ตำแหน่ง Legend: ตำแหน่งใดก็ได้</option>
+                              <option value="r">ตำแหน่ง Legend: ด้านขวา</option>
+                              <option value="b">ตำแหน่ง Legend: ด้านล่าง</option>
+                              <option value="t">ตำแหน่ง Legend: ด้านบน</option>
+                              <option value="l">ตำแหน่ง Legend: ด้านซ้าย</option>
+                            </Select>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   )}
 
