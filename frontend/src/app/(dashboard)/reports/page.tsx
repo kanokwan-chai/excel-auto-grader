@@ -175,7 +175,7 @@ export default function ReportsPage() {
     setRegrading(true);
     setRegradeProgress(null);
     setRegradeError(null);
-    const BATCH_SIZE = 5;
+    const BATCH_SIZE = 3;
     let done = 0;
     let totalFailed = 0;
     let lastErrorSample = "";

@@ -299,7 +299,8 @@ def grade_single_submission(
         graded_at=datetime.now(timezone.utc),
     )
 
-    batch_objs: list[Any] = [result]
+    detail_objs: list[GradingDetail] = []
+    error_objs: list[GradingError] = []
     for det in output.details:
         gd_id = str(uuid.uuid4())
         gd = GradingDetail(
@@ -322,9 +323,9 @@ def grade_single_submission(
             suggestion=det.suggestion,
             evidence_json=det.evidence,
         )
-        batch_objs.append(gd)
+        detail_objs.append(gd)
         for err in det.errors:
-            batch_objs.append(
+            error_objs.append(
                 GradingError(
                     owner_user_id=owner_user_id,
                     grading_result_id=res_id,
@@ -340,7 +341,14 @@ def grade_single_submission(
                 )
             )
 
-    batch_objs.append(
+    db.add(result)
+    db.flush()
+    if detail_objs:
+        db.add_all(detail_objs)
+    if error_objs:
+        db.flush()
+        db.add_all(error_objs)
+    db.add(
         ActivityLog(
             owner_user_id=owner_user_id,
             actor_user_id=owner_user_id,
@@ -350,6 +358,5 @@ def grade_single_submission(
             metadata_json={"score": result.final_score, "max_score": result.max_score},
         )
     )
-    db.add_all(batch_objs)
     db.commit()
     return result

@@ -235,12 +235,36 @@ async def _auto_repair_stale_filter_rubrics_and_results() -> None:
     except Exception as exc2:
         _REPAIR_STATS["last_error"] = f"phase2: {exc2}"
 
+class _NoCacheAPIMiddleware:
+    """Pure ASGI middleware (never swallows CORS/exceptions like BaseHTTPMiddleware)."""
+
+    def __init__(self, app_inner):
+        self.app_inner = app_inner
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or not str(scope.get("path") or "").startswith("/api/"):
+            await self.app_inner(scope, receive, send)
+            return
+
+        async def send_with_no_cache(message):
+            if message.get("type") == "http.response.start":
+                headers = list(message.get("headers") or [])
+                headers.append((b"cache-control", b"no-store, no-cache, must-revalidate, max-age=0"))
+                headers.append((b"pragma", b"no-cache"))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app_inner(scope, receive, send_with_no_cache)
+
+
 app = FastAPI(
     title="Excel Auto Grader API",
     description="Multi-Teacher SaaS Platform for Automatic Microsoft Excel Grading & Google Classroom Integration",
     version="2.0.0",
 )
 
+# Register NoCache BEFORE CORSMiddleware so CORSMiddleware is ALWAYS outermost!
+app.add_middleware(_NoCacheAPIMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -263,20 +287,17 @@ app.include_router(classroom.router, prefix=API_PREFIX)
 app.include_router(reports.router, prefix=API_PREFIX)
 
 
-@app.middleware("http")
-async def no_cache_api_middleware(request: Request, call_next):
-    response = await call_next(request)
-    if request.url.path.startswith("/api/"):
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        response.headers["Pragma"] = "no-cache"
-    return response
-
-
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """Ensure unexpected 500 errors still pass through CORSMiddleware with a clear Thai message."""
+    """Ensure unexpected 500 errors ALWAYS include CORS headers and the real Thai/Python error message."""
+    origin = request.headers.get("origin") or ""
+    resp_headers: dict[str, str] = {}
+    if origin and (origin in settings.cors_origin_list or "*" in settings.cors_origin_list):
+        resp_headers["Access-Control-Allow-Origin"] = origin
+        resp_headers["Access-Control-Allow-Credentials"] = "true"
     return JSONResponse(
         status_code=500,
+        headers=resp_headers,
         content={"detail": f"เซิร์ฟเวอร์เกิดข้อผิดพลาดขณะประมวลผล: {type(exc).__name__}: {exc}"},
     )
 
@@ -289,7 +310,7 @@ async def on_startup_repair():
 
 @app.get("/ping")
 def lightweight_ping():
-    return {"ok": True, "build": "fast-live-v5", **_REPAIR_STATS}
+    return {"ok": True, "build": "fast-live-v6", **_REPAIR_STATS}
 
 
 @app.get("/health")

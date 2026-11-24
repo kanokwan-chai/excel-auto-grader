@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from backend.app.api.deps import get_current_teacher
 from backend.app.core.database import get_db
-from backend.app.models.models import Assignment, GradingResult, RubricVersion, Student, Submission, User
+from backend.app.models.models import Assignment, GradingDetail, GradingResult, RubricVersion, Student, Submission, User
 from backend.app.services.export_service import (
     generate_class_report_csv,
     generate_class_report_excel,
@@ -40,7 +40,6 @@ def _build_class_report_data(
 
     results = (
         db.query(GradingResult, Submission, Student)
-        .options(selectinload(GradingResult.details))
         .join(Submission, GradingResult.submission_id == Submission.id)
         .outerjoin(Student, GradingResult.student_id == Student.id)
         .filter(
@@ -74,6 +73,13 @@ def _build_class_report_data(
         deduped_results.append((gr, sub, st))
     results = deduped_results
 
+    # Bulk-load all GradingDetail rows in ONE query (zero N+1 queries, 100% SQLAlchemy-safe)
+    details_by_result: dict[str, list[GradingDetail]] = {}
+    res_ids = [gr.id for gr, _, _ in results]
+    if res_ids:
+        for d_row in db.query(GradingDetail).filter(GradingDetail.grading_result_id.in_(res_ids)).all():
+            details_by_result.setdefault(d_row.grading_result_id, []).append(d_row)
+
     rows = []
     for idx, (gr, sub, st) in enumerate(results, start=1):
         name = f"{st.first_name} {st.last_name}" if st else (sub.student_display_name or "ไม่ระบุชื่อ")
@@ -92,9 +98,10 @@ def _build_class_report_data(
         if status_filter == "confirmed" and not gr.is_confirmed:
             continue
 
+        gr_details = details_by_result.get(gr.id, [])
         deducted_lines = [
             f"- {d.item_title} (หัก {d.deducted_points:g} คะแนน): {d.reason or 'ไม่ตรงตามเกณฑ์'}"
-            for d in gr.details
+            for d in gr_details
             if d.deducted_points > 0
         ]
         deduction_comment = (
@@ -119,7 +126,7 @@ def _build_class_report_data(
             "status_label": "ยืนยันแล้ว" if gr.is_confirmed else ("ผ่าน" if passed else "ไม่ผ่าน"),
             "deduction_summary": "; ".join(
                 f"{d.item_title} (-{d.deducted_points:g}: {d.reason or 'ไม่ตรงตามเกณฑ์'})"
-                for d in gr.details
+                for d in gr_details
                 if d.deducted_points > 0
             ) or "ไม่ถูกหักคะแนน",
             "deduction_comment": deduction_comment,

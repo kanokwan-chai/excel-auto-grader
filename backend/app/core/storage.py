@@ -113,7 +113,7 @@ class StorageService:
                     "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
                     "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
                 },
-                timeout=30.0,
+                timeout=12.0,
             )
             if resp.status_code == 200:
                 local_target.parent.mkdir(parents=True, exist_ok=True)
@@ -121,6 +121,46 @@ class StorageService:
                 return local_target
 
         raise FileNotFoundError(f"ไม่พบไฟล์ในระบบจัดเก็บ: {storage_path}")
+
+    async def prefetch_local_paths_batch(self, storage_paths: list[str], user_id: str) -> None:
+        """Concurrently download missing files from Supabase Storage to local cache so re-grading never stalls."""
+        import asyncio
+
+        if not (settings.SUPABASE_URL and settings.SUPABASE_SERVICE_ROLE_KEY):
+            return
+
+        missing: list[tuple[str, Path]] = []
+        for sp in dict.fromkeys(storage_paths):
+            if not sp:
+                continue
+            try:
+                self.assert_tenant_ownership(sp, user_id)
+                local_target = (self.base_dir / sp.lstrip("/")).resolve()
+                if str(local_target).startswith(str(self.base_dir)) and not local_target.exists():
+                    missing.append((sp.lstrip("/"), local_target))
+            except Exception:
+                continue
+
+        if not missing:
+            return
+
+        headers = {
+            "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
+        }
+        base_url = f"{settings.SUPABASE_URL.rstrip('/')}/storage/v1/object/authenticated/{settings.SUPABASE_STORAGE_BUCKET}"
+
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            async def _fetch_one(rel: str, target: Path) -> None:
+                try:
+                    resp = await client.get(f"{base_url}/{rel}", headers=headers)
+                    if resp.status_code == 200:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(resp.content)
+                except Exception:
+                    pass
+
+            await asyncio.gather(*(_fetch_one(rel, tgt) for rel, tgt in missing))
 
     def delete_file(self, storage_path: str, user_id: str) -> None:
         self.assert_tenant_ownership(storage_path, user_id)

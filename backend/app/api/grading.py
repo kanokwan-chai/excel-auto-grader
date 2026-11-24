@@ -128,6 +128,19 @@ async def run_grading_job(
         except Exception:
             ref_path = None
 
+    # Concurrently pre-fetch any missing student files from Supabase Storage (fast after Render restarts!)
+    if sub_ids:
+        pf_rows = (
+            db.query(SubmissionFile.storage_path)
+            .filter(
+                SubmissionFile.owner_user_id == current_teacher.id,
+                SubmissionFile.submission_id.in_(sub_ids),
+                SubmissionFile.is_primary.is_(True),
+            )
+            .all()
+        )
+        await storage_service.prefetch_local_paths_batch([r[0] for r in pf_rows if r[0]], current_teacher.id)
+
     processed = 0
     failed = 0
     result_ids: list[str] = []
