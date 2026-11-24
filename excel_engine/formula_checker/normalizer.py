@@ -144,6 +144,137 @@ def analyze_formula(formula: str) -> FormulaAnalysis:
     )
 
 
+def _strip_outer_parens(expr: str) -> str:
+    s = expr.strip()
+    while s.startswith("(") and s.endswith(")"):
+        depth = 0
+        wraps_all = True
+        for i, ch in enumerate(s):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0 and i < len(s) - 1:
+                    wraps_all = False
+                    break
+        if wraps_all and depth == 0:
+            s = s[1:-1].strip()
+        else:
+            break
+    return s
+
+
+_SINGLE_CELL_RE = re.compile(r"^(?:(?:'[^']+'|[A-Z0-9_.\u0E00-\u0E7F]+)!)?[A-Z]{1,3}[0-9]+$")
+_RANGE_CELL_RE = re.compile(r"^((?:'[^']+'|[A-Z0-9_.\u0E00-\u0E7F]+)!)?([A-Z]{1,3}[0-9]+:[A-Z]{1,3}[0-9]+)$")
+
+
+def _expand_ref_token(tok: str) -> list[str] | None:
+    """Expand 'C4' -> ['C4'], 'C4:E4' -> ['C4','D4','E4'], 'Sheet1!C4:E4' -> ['Sheet1!C4',...]."""
+    t = _strip_outer_parens(tok).replace("$", "")
+    if _SINGLE_CELL_RE.fullmatch(t):
+        return [t]
+    m_rng = _RANGE_CELL_RE.fullmatch(t)
+    if m_rng:
+        prefix = m_rng.group(1) or ""
+        rng = m_rng.group(2)
+        try:
+            from openpyxl.utils import get_column_letter, range_boundaries
+
+            min_c, min_r, max_c, max_r = range_boundaries(rng)
+            if (max_c - min_c + 1) * (max_r - min_r + 1) > 2000:
+                return None
+            return [
+                f"{prefix}{get_column_letter(c)}{r}"
+                for r in range(min_r, max_r + 1)
+                for c in range(min_c, max_c + 1)
+            ]
+        except Exception:
+            return None
+    return None
+
+
+def _extract_sum_terms(expr_no_eq: str) -> list[str] | None:
+    """
+    Extract sorted list of summed cell coordinates from either:
+    - SUM(C4:E4), SUM(C4,D4,E4), SUM(C4+D4+E4), SUM(C4:D4,E4)
+    - Pure addition chain: C4+D4+E4, (C4+D4+E4)
+    Returns sorted list of expanded cell refs (preserving duplicates), or None if not a pure sum.
+    """
+    s = _strip_outer_parens(expr_no_eq.replace("$", ""))
+    if s.startswith("SUM(") and s.endswith(")"):
+        inner = _strip_outer_parens(s[4:-1])
+        # Support SUM(C4,D4,E4), SUM(C4:E4), and even SUM(C4+D4+E4)
+        if any(op in inner for op in ("-", "*", "/", "(", ")")):
+            return None
+        raw_parts: list[str] = []
+        for comma_part in inner.split(","):
+            for plus_part in comma_part.split("+"):
+                p = plus_part.strip()
+                if not p:
+                    return None
+                raw_parts.append(p)
+        expanded: list[str] = []
+        for part in raw_parts:
+            cells = _expand_ref_token(part)
+            if not cells:
+                return None
+            expanded.extend(cells)
+        return sorted(expanded) if expanded else None
+
+    if "+" in s and not any(op in s for op in ("-", "*", "/", "(", ")", ",")):
+        expanded = []
+        for part in s.split("+"):
+            cells = _expand_ref_token(part.strip())
+            if not cells:
+                return None
+            expanded.extend(cells)
+        return sorted(expanded) if len(expanded) >= 2 else None
+
+    return None
+
+
+def _extract_product_terms(expr_no_eq: str) -> list[str] | None:
+    """
+    Extract sorted list of multiplied cell/number operands from:
+    - B4*F4, F4*B4, (B4*F4), SUM(B4*F4), PRODUCT(B4,F4), PRODUCT(B4:C4)
+    """
+    s = _strip_outer_parens(expr_no_eq.replace("$", ""))
+    if s.startswith("SUM(") and s.endswith(")") and "*" in s:
+        s = _strip_outer_parens(s[4:-1])
+    if s.startswith("PRODUCT(") and s.endswith(")"):
+        inner = _strip_outer_parens(s[8:-1])
+        if any(op in inner for op in ("+", "-", "/", "(", ")")):
+            return None
+        parts = [p.strip() for chunk in inner.split(",") for p in chunk.split("*") if p.strip()]
+    elif "*" in s and not any(op in s for op in ("+", "-", "/", "(", ")", ",")):
+        parts = [p.strip() for p in s.split("*") if p.strip()]
+    else:
+        return None
+
+    if len(parts) < 2:
+        return None
+    expanded: list[str] = []
+    for p in parts:
+        cells = _expand_ref_token(p)
+        if cells:
+            expanded.extend(cells)
+        elif re.fullmatch(r"\d+(?:\.\d+)?", p):
+            expanded.append(str(float(p)))
+        else:
+            return None
+    return sorted(expanded)
+
+
+def is_pure_addition_formula(formula: str) -> bool:
+    """Return True if formula is a pure addition of >=2 cell references (e.g. =C4+D4+E4)."""
+    norm = normalize_formula(formula, preserve_absolute=False)
+    s = _strip_outer_parens(norm[1:])
+    if "+" not in s or any(op in s for op in ("-", "*", "/", "(", ")", ",")):
+        return False
+    terms = _extract_sum_terms(s)
+    return bool(terms and len(terms) >= 2)
+
+
 def are_formulas_equivalent(
     actual_formula: str,
     expected_formula: str,
@@ -152,6 +283,10 @@ def are_formulas_equivalent(
     """
     Compare two formulas carefully.
     Returns (is_equivalent, match_reason).
+    Supports:
+    - Exact / absolute-insensitive match
+    - SUM(C4:E4) == C4+D4+E4 == (C4+D4+E4) == SUM(C4,D4,E4) == SUM(C4+D4+E4)
+    - B4*F4 == F4*B4 == PRODUCT(B4,F4) == SUM(B4*F4)
     """
     a = analyze_formula(actual_formula)
     e = analyze_formula(expected_formula)
@@ -162,10 +297,22 @@ def are_formulas_equivalent(
     if not strict_reference_mode and a.normalized_no_abs == e.normalized_no_abs:
         return True, "normalized_ignore_absolute_match"
 
-    # Safe commutative equivalence for simple 2-arg SUM/AVERAGE/MAX/MIN or A+B == B+A
-    # Only when exact same function and sorted argument list for strictly commutative functions
-    if _check_simple_commutative_addition(a.normalized_no_abs[1:], e.normalized_no_abs[1:]) and not strict_reference_mode:
-        return True, "commutative_addition_match"
+    if not strict_reference_mode:
+        # 1. Pure sum equivalence: =C4+D4+E4 <-> =SUM(C4:E4) <-> =SUM(C4,D4,E4)
+        sum_a = _extract_sum_terms(a.normalized_no_abs[1:])
+        sum_e = _extract_sum_terms(e.normalized_no_abs[1:])
+        if sum_a is not None and sum_e is not None and sum_a == sum_e:
+            return True, "sum_addition_equivalent_match"
+
+        # 2. Pure product equivalence: =F4*B4 <-> =B4*F4 <-> =PRODUCT(B4,F4) <-> =SUM(B4*F4)
+        prod_a = _extract_product_terms(a.normalized_no_abs[1:])
+        prod_e = _extract_product_terms(e.normalized_no_abs[1:])
+        if prod_a is not None and prod_e is not None and prod_a == prod_e:
+            return True, "commutative_product_match"
+
+        # 3. General simple commutative addition (e.g. A1+10 vs 10+A1)
+        if _check_simple_commutative_addition(a.normalized_no_abs[1:], e.normalized_no_abs[1:]):
+            return True, "commutative_addition_match"
 
     return False, "mismatch"
 

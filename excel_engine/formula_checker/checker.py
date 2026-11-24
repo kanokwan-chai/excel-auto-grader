@@ -7,7 +7,11 @@ from typing import Any
 from openpyxl.utils import range_boundaries
 from openpyxl.workbook import Workbook
 
-from excel_engine.formula_checker.normalizer import analyze_formula, are_formulas_equivalent
+from excel_engine.formula_checker.normalizer import (
+    analyze_formula,
+    are_formulas_equivalent,
+    is_pure_addition_formula,
+)
 from excel_engine.models import GradingErrorRecord, RubricItemConfig, RubricItemResult
 
 
@@ -134,9 +138,15 @@ def check_formula_item(
         analysis = analyze_formula(actual_formula)
         cell_ok = True
 
-        # 2. Check required functions
+        # 2. Check required functions (forgiving: allow pure addition =C4+D4+E4 when SUM is requested unless strict)
+        strict_func = bool(cfg.get("strict_function_required", False))
         if required_funcs:
-            missing_funcs = [f for f in required_funcs if f not in analysis.functions]
+            missing_funcs = [
+                f
+                for f in required_funcs
+                if f not in analysis.functions
+                and not (f == "SUM" and not strict_func and is_pure_addition_formula(actual_formula))
+            ]
             if missing_funcs:
                 cell_ok = False
                 errors.append(
@@ -426,6 +436,7 @@ def _check_formula_auto_detect(
             )
 
     # Case 2: No reference file (or function not in reference) -> scan student's entire workbook
+    strict_func = bool(cfg.get("strict_function_required", False))
     found_cells: list[tuple[str, str, str]] = []
     for sname in student_formula_wb.sheetnames:
         ws = student_formula_wb[sname]
@@ -434,7 +445,11 @@ def _check_formula_auto_detect(
                 val = ws.cell(row=r, column=c).value
                 if isinstance(val, str) and val.strip().startswith("="):
                     analysis = analyze_formula(val)
-                    if not required_funcs or any(fn in analysis.functions for fn in required_funcs):
+                    if not required_funcs or any(
+                        fn in analysis.functions
+                        or (fn == "SUM" and not strict_func and is_pure_addition_formula(val))
+                        for fn in required_funcs
+                    ):
                         found_cells.append((sname, ws.cell(row=r, column=c).coordinate, val))
 
     if found_cells:
