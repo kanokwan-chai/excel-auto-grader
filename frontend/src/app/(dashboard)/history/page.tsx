@@ -24,6 +24,7 @@ interface HistoryResponse {
     id: string;
     assignment_id: string;
     assignment_title: string;
+    classroom_name?: string | null;
     status: string;
     total_files: number;
     processed_files: number;
@@ -35,6 +36,7 @@ interface HistoryResponse {
     id: string;
     result_id: string;
     assignment_title: string;
+    classroom_name?: string | null;
     student_name: string;
     previous_score: number;
     new_score: number;
@@ -139,14 +141,19 @@ export default function HistoryPage() {
                   <div key={j.id} className="flex items-center justify-between gap-3 rounded-2xl border border-violet-50 bg-violet-50/30 p-3.5 text-sm">
                     <div className="min-w-0">
                       <p className="font-semibold text-violet-950 truncate">{j.assignment_title}</p>
-                      <p className="text-xs text-slate-500">
+                      {j.classroom_name && (
+                        <p className="text-[11px] font-semibold text-sky-700 truncate mt-0.5">
+                          🏫 {j.classroom_name}
+                        </p>
+                      )}
+                      <p className="text-xs text-slate-500 mt-0.5">
                         ตรวจ {j.processed_files}/{j.total_files} ไฟล์ • ผิดพลาด {j.failed_files} • {formatThaiDate(j.completed_at || j.started_at)}
                       </p>
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
                       <Badge tone={j.status === "completed" ? "mint" : "amber"}>{j.status}</Badge>
-                      <Link href="/reports">
-                        <Button size="sm" variant="secondary" title="เข้าไปดูผลคะแนน">
+                      <Link href={`/reports?assignment_id=${encodeURIComponent(j.assignment_id)}`}>
+                        <Button size="sm" variant="secondary" title="เข้าไปดูผลคะแนนของห้องนี้">
                           <Eye className="h-3.5 w-3.5" /> ดูผล
                         </Button>
                       </Link>
@@ -198,7 +205,9 @@ export default function HistoryPage() {
                       </div>
                     </div>
                     <p className="text-xs text-slate-600 mt-1">
-                      {adj.assignment_title} • คะแนน {adj.previous_score} → <strong>{adj.new_score}</strong>
+                      {adj.assignment_title}
+                      {adj.classroom_name ? ` (🏫 ${adj.classroom_name})` : ""} • คะแนน {adj.previous_score} →{" "}
+                      <strong>{adj.new_score}</strong>
                     </p>
                     <p className="text-xs text-slate-500 mt-1">เหตุผล: {adj.reason}</p>
                     <p className="text-[11px] text-slate-400 mt-1">{formatThaiDate(adj.created_at)}</p>

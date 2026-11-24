@@ -726,6 +726,7 @@ export default function RubricsPage() {
                 {assignments.map((a) => (
                   <option key={a.id} value={a.id}>
                     {a.title}
+                    {a.class_name ? ` — 🏫 ${a.class_name}` : ""}
                   </option>
                 ))}
               </Select>

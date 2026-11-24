@@ -12,6 +12,8 @@ from backend.app.core.database import get_db
 from backend.app.core.storage import storage_service
 from backend.app.models.models import (
     Assignment,
+    ClassroomAssignment,
+    GoogleClassroom,
     GradeAdjustment,
     GradingDetail,
     GradingError,
@@ -22,6 +24,7 @@ from backend.app.models.models import (
     RubricVersion,
     Submission,
     SubmissionFile,
+    TeacherClass,
     User,
 )
 from excel_engine.readers import load_workbooks
@@ -825,6 +828,45 @@ def get_grading_history(
         .all()
     )
 
+    # Bulk-resolve classroom / room name for every assignment in history
+    assign_room_map: dict[str, str] = {}
+    all_ca = (
+        db.query(ClassroomAssignment, GoogleClassroom)
+        .join(GoogleClassroom, ClassroomAssignment.google_classroom_id == GoogleClassroom.id)
+        .filter(ClassroomAssignment.owner_user_id == current_teacher.id)
+        .all()
+    )
+    ca_by_id: dict[str, str] = {}
+    ca_by_local_assign: dict[str, str] = {}
+    for ca_row, gc_row in all_ca:
+        label = gc_row.name or ""
+        if gc_row.section and gc_row.section.strip() and gc_row.section.strip() not in label:
+            label = f"{label} ({gc_row.section.strip()})"
+        if gc_row.room and gc_row.room.strip() and gc_row.room.strip() not in label:
+            label = f"{label} • ห้อง {gc_row.room.strip()}"
+        ca_by_id[ca_row.id] = label
+        if ca_row.local_assignment_id:
+            ca_by_local_assign[ca_row.local_assignment_id] = label
+
+    tc_map = {
+        tc.id: tc.name
+        for tc in db.query(TeacherClass).filter(TeacherClass.owner_user_id == current_teacher.id).all()
+    }
+
+    def _resolve_room_label(a_obj: Assignment) -> str | None:
+        if a_obj.id in assign_room_map:
+            return assign_room_map[a_obj.id]
+        lbl = None
+        if a_obj.classroom_assignment_id and a_obj.classroom_assignment_id in ca_by_id:
+            lbl = ca_by_id[a_obj.classroom_assignment_id]
+        elif a_obj.id in ca_by_local_assign:
+            lbl = ca_by_local_assign[a_obj.id]
+        elif a_obj.class_id and a_obj.class_id in tc_map:
+            lbl = tc_map[a_obj.class_id]
+        if lbl:
+            assign_room_map[a_obj.id] = lbl
+        return lbl
+
     merged_jobs: list[dict] = []
     for j, a in jobs:
         j_ts = j.completed_at or j.started_at or j.created_at
@@ -850,6 +892,7 @@ def get_grading_history(
             "id": j.id,
             "assignment_id": a.id,
             "assignment_title": a.title,
+            "classroom_name": _resolve_room_label(a),
             "status": j.status,
             "total_files": int(j.total_files or 0),
             "processed_files": int(j.processed_files or 0),
@@ -880,6 +923,7 @@ def get_grading_history(
                 "id": adj.id,
                 "result_id": gr.id,
                 "assignment_title": a.title,
+                "classroom_name": _resolve_room_label(a),
                 "student_name": sub.student_display_name or "-",
                 "previous_score": adj.previous_score,
                 "new_score": adj.new_score,

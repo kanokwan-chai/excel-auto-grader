@@ -562,7 +562,12 @@ export default function ReportsPage() {
       <Card className="grid gap-3 sm:grid-cols-4 p-4">
         <Select value={assignmentId} onChange={(e) => setAssignmentId(e.target.value)}>
           <option value="">-- เลือกงาน --</option>
-          {assignments.map((a) => <option key={a.id} value={a.id}>{a.title}</option>)}
+          {assignments.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.title}
+              {a.class_name ? ` — 🏫 ${a.class_name}` : ""}
+            </option>
+          ))}
         </Select>
         <Input
           placeholder="ค้นหาชื่อหรือรหัสนักเรียน..."

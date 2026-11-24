@@ -13,6 +13,8 @@ from backend.app.core.database import get_db
 from backend.app.core.storage import storage_service
 from backend.app.models.models import (
     Assignment,
+    ClassroomAssignment,
+    GoogleClassroom,
     GradingResult,
     ReferenceFile,
     Submission,
@@ -44,6 +46,26 @@ def list_assignments(
         q = q.filter(Assignment.status == status_filter)
 
     items = q.order_by(Assignment.created_at.desc()).all()
+
+    # Preload Google Classroom course/section labels in 1 query so every assignment shows its room!
+    all_ca = (
+        db.query(ClassroomAssignment, GoogleClassroom)
+        .join(GoogleClassroom, ClassroomAssignment.google_classroom_id == GoogleClassroom.id)
+        .filter(ClassroomAssignment.owner_user_id == current_teacher.id)
+        .all()
+    )
+    ca_by_id: dict[str, str] = {}
+    ca_by_local: dict[str, str] = {}
+    for ca_row, gc_row in all_ca:
+        lbl = gc_row.name or ""
+        if gc_row.section and gc_row.section.strip() and gc_row.section.strip() not in lbl:
+            lbl = f"{lbl} ({gc_row.section.strip()})"
+        if gc_row.room and gc_row.room.strip() and gc_row.room.strip() not in lbl:
+            lbl = f"{lbl} • ห้อง {gc_row.room.strip()}"
+        ca_by_id[ca_row.id] = lbl
+        if ca_row.local_assignment_id:
+            ca_by_local[ca_row.local_assignment_id] = lbl
+
     out = []
     for a in items:
         sub_count = db.query(func.count(Submission.id)).filter(
@@ -59,7 +81,11 @@ def list_assignments(
             .first()
         )
         cls_name = None
-        if a.class_id:
+        if a.classroom_assignment_id and a.classroom_assignment_id in ca_by_id:
+            cls_name = ca_by_id[a.classroom_assignment_id]
+        elif a.id in ca_by_local:
+            cls_name = ca_by_local[a.id]
+        elif a.class_id:
             cls = db.query(TeacherClass).filter(TeacherClass.id == a.class_id).first()
             cls_name = cls.name if cls else None
 
