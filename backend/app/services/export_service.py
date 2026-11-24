@@ -161,3 +161,221 @@ def generate_individual_report_pdf(report_data: dict[str, Any]) -> bytes:
     story.append(tbl)
     doc.build(story)
     return buf.getvalue()
+
+
+def _safe_sheet_title(raw: str, used: set[str]) -> str:
+    import re
+    cleaned = re.sub(r"[:\\/?*\[\]]+", " ", raw or "Sheet").strip() or "Sheet"
+    base = cleaned[:28]
+    cand = base
+    n = 2
+    while cand in used:
+        cand = f"{base[:25]}_{n}"
+        n += 1
+    used.add(cand)
+    return cand
+
+
+def generate_classroom_gradebook_excel(
+    classroom_name: str,
+    assignments_meta: list[dict[str, Any]],
+    student_rows: list[dict[str, Any]],
+    per_assignment_rows: dict[str, list[dict[str, Any]]],
+) -> bytes:
+    """Create a multi-sheet Excel (.xlsx) Gradebook for an entire Classroom (Summary + 1 tab per assignment)."""
+    from openpyxl.utils import get_column_letter
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "สรุปคะแนนรวมทั้งห้อง"
+    used_titles = {ws.title}
+
+    header_fill = PatternFill(start_color="2E7D32", end_color="2E7D32", fill_type="solid")
+    sub_fill = PatternFill(start_color="F1F8E9", end_color="F1F8E9", fill_type="solid")
+    total_fill = PatternFill(start_color="DCEDC8", end_color="DCEDC8", fill_type="solid")
+    header_font = Font(name="Sarabun", size=11, bold=True, color="FFFFFF")
+    title_font = Font(name="Sarabun", size=15, bold=True, color="1B5E20")
+    body_font = Font(name="Sarabun", size=11)
+    bold_font = Font(name="Sarabun", size=11, bold=True, color="1B5E20")
+    thin = Side(style="thin", color="C5E1A5")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    num_assign = len(assignments_meta)
+    total_cols = 2 + num_assign + 3  # เลขที่, ชื่อ-นามสกุล, [งาน...], รวม, เต็ม, %
+    last_col_let = get_column_letter(total_cols)
+
+    ws.merge_cells(f"A1:{last_col_let}1")
+    ws["A1"] = f"สมุดบันทึกคะแนนรวมทั้งห้อง — {classroom_name}"
+    ws["A1"].font = title_font
+    ws["A1"].alignment = Alignment(horizontal="left", vertical="center")
+    ws.row_dimensions[1].height = 30
+
+    total_max = round(sum(float(a.get("max_score") or 0) for a in assignments_meta), 2)
+    ws["A2"] = f"วันที่ส่งออก: {datetime.now().strftime('%Y-%m-%d %H:%M')}  •  จำนวนนักเรียน {len(student_rows)} คน  •  จำนวนงาน {num_assign} งาน (คะแนนเต็มรวม {total_max:g} คะแนน)"
+    ws["A2"].font = Font(name="Sarabun", size=10, italic=True, color="33691E")
+
+    headers = ["เลขที่", "ชื่อ-นามสกุล"]
+    for a in assignments_meta:
+        headers.append(f"{a['title']} ({float(a.get('max_score') or 0):g})")
+    headers.extend(["คะแนนรวม", "คะแนนเต็มรวม", "ร้อยละ (%)"])
+
+    ws.row_dimensions[4].height = 28
+    for c_idx, h_text in enumerate(headers, start=1):
+        cell = ws.cell(row=4, column=c_idx, value=h_text)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border
+
+    first_assign_col = 3
+    last_assign_col = 2 + num_assign
+    sum_col = last_assign_col + 1
+    max_col = last_assign_col + 2
+    pct_col = last_assign_col + 3
+
+    for r_offset, st in enumerate(student_rows):
+        row_num = 5 + r_offset
+        c1 = ws.cell(row=row_num, column=1, value=r_offset + 1)
+        c2 = ws.cell(row=row_num, column=2, value=st["student_name"])
+        c1.alignment = Alignment(horizontal="center")
+        c2.alignment = Alignment(horizontal="left")
+        c1.font = body_font
+        c2.font = body_font
+        c1.border = border
+        c2.border = border
+
+        scores_map: dict[str, float | None] = st.get("scores", {})
+        for a_idx, a in enumerate(assignments_meta):
+            col_i = first_assign_col + a_idx
+            sc = scores_map.get(a["assignment_id"])
+            c_sc = ws.cell(row=row_num, column=col_i, value=round(float(sc), 2) if sc is not None else 0.0)
+            c_sc.font = body_font
+            c_sc.border = border
+            c_sc.alignment = Alignment(horizontal="right")
+            c_sc.number_format = "0.00"
+
+        if num_assign > 0:
+            sum_formula = f"=SUM({get_column_letter(first_assign_col)}{row_num}:{get_column_letter(last_assign_col)}{row_num})"
+        else:
+            sum_formula = 0.0
+        c_sum = ws.cell(row=row_num, column=sum_col, value=sum_formula)
+        c_max = ws.cell(row=row_num, column=max_col, value=total_max)
+        sum_let = get_column_letter(sum_col)
+        max_let = get_column_letter(max_col)
+        c_pct = ws.cell(
+            row=row_num,
+            column=pct_col,
+            value=f"=IF({max_let}{row_num}>0,ROUND({sum_let}{row_num}/{max_let}{row_num}*100,2),0)",
+        )
+        for c_tot in (c_sum, c_max, c_pct):
+            c_tot.font = bold_font
+            c_tot.border = border
+            c_tot.alignment = Alignment(horizontal="right")
+            c_tot.number_format = "0.00"
+
+        if row_num % 2 == 1:
+            for ci in range(1, total_cols + 1):
+                ws.cell(row=row_num, column=ci).fill = sub_fill
+
+    # Bottom class average row
+    if student_rows:
+        avg_row = 5 + len(student_rows)
+        ws.cell(row=avg_row, column=1, value="").border = border
+        lbl_avg = ws.cell(row=avg_row, column=2, value="ค่าเฉลี่ยทั้งห้อง")
+        lbl_avg.font = bold_font
+        lbl_avg.border = border
+        for ci in range(first_assign_col, pct_col + 1):
+            col_l = get_column_letter(ci)
+            c_a = ws.cell(row=avg_row, column=ci, value=f"=AVERAGE({col_l}5:{col_l}{avg_row - 1})")
+            c_a.font = bold_font
+            c_a.border = border
+            c_a.alignment = Alignment(horizontal="right")
+            c_a.number_format = "0.00"
+        for ci in range(1, total_cols + 1):
+            ws.cell(row=avg_row, column=ci).fill = total_fill
+
+    ws.column_dimensions["A"].width = 8
+    ws.column_dimensions["B"].width = 30
+    for ci in range(first_assign_col, last_assign_col + 1):
+        ws.column_dimensions[get_column_letter(ci)].width = 20
+    ws.column_dimensions[get_column_letter(sum_col)].width = 14
+    ws.column_dimensions[get_column_letter(max_col)].width = 15
+    ws.column_dimensions[get_column_letter(pct_col)].width = 14
+    ws.freeze_panes = "C5"
+
+    # Additional sheet per assignment with deduction details
+    for a in assignments_meta:
+        aid = a["assignment_id"]
+        a_rows = per_assignment_rows.get(aid, [])
+        tab_ws = wb.create_sheet(title=_safe_sheet_title(a["title"], used_titles))
+        tab_ws.merge_cells("A1:G1")
+        tab_ws["A1"] = f"{a['title']} — {classroom_name}"
+        tab_ws["A1"].font = title_font
+        tab_ws.row_dimensions[1].height = 26
+
+        sub_headers = ["เลขที่", "ชื่อ-นามสกุล", "คะแนนที่ได้", "คะแนนเต็ม", "ร้อยละ (%)", "สถานะ", "รายการที่ถูกหักคะแนน"]
+        tab_ws.row_dimensions[3].height = 24
+        for ci, h_txt in enumerate(sub_headers, start=1):
+            cell = tab_ws.cell(row=3, column=ci, value=h_txt)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = border
+
+        for r_i, r_row in enumerate(a_rows, start=4):
+            vals = [
+                r_i - 3,
+                r_row.get("student_name") or "-",
+                float(r_row.get("final_score", 0)),
+                float(r_row.get("max_score", 0)),
+                float(r_row.get("percentage", 0)),
+                r_row.get("status_label") or "-",
+                r_row.get("deduction_summary") or "ไม่ถูกหักคะแนน",
+            ]
+            for ci, val in enumerate(vals, start=1):
+                c = tab_ws.cell(row=r_i, column=ci, value=val)
+                c.font = body_font
+                c.border = border
+                if ci in (1, 6):
+                    c.alignment = Alignment(horizontal="center")
+                elif ci in (3, 4, 5):
+                    c.alignment = Alignment(horizontal="right")
+                    c.number_format = "0.00"
+                elif ci == 7:
+                    c.alignment = Alignment(horizontal="left", wrap_text=True)
+                if r_i % 2 == 1:
+                    c.fill = sub_fill
+
+        for ci, w in enumerate([8, 28, 14, 12, 13, 14, 52], start=1):
+            tab_ws.column_dimensions[get_column_letter(ci)].width = w
+        tab_ws.freeze_panes = "C4"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def generate_classroom_gradebook_csv(
+    assignments_meta: list[dict[str, Any]],
+    student_rows: list[dict[str, Any]],
+) -> bytes:
+    """Create UTF-8 BOM CSV Gradebook for an entire classroom (all graded assignments side-by-side)."""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    total_max = round(sum(float(a.get("max_score") or 0) for a in assignments_meta), 2)
+    header = ["เลขที่", "ชื่อ-นามสกุล"] + [
+        f"{a['title']} ({float(a.get('max_score') or 0):g})" for a in assignments_meta
+    ] + ["คะแนนรวม", "คะแนนเต็มรวม", "ร้อยละ (%)"]
+    writer.writerow(header)
+
+    for idx, st in enumerate(student_rows, start=1):
+        scores_map = st.get("scores", {})
+        sc_vals = [float(scores_map.get(a["assignment_id"]) or 0.0) for a in assignments_meta]
+        tot = round(sum(sc_vals), 2)
+        pct = round((tot / total_max * 100.0) if total_max > 0 else 0.0, 2)
+        writer.writerow(
+            [idx, st["student_name"]]
+            + [f"{v:.2f}" for v in sc_vals]
+            + [f"{tot:.2f}", f"{total_max:.2f}", f"{pct:.2f}%"]
+        )
+    return ("\ufeff" + buf.getvalue()).encode("utf-8")

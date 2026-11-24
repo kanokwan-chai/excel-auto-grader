@@ -15,6 +15,7 @@ const NAV_ITEMS: { href: string; label: string; emoji: string; tone: Tone3D }[] 
   { href: "/google-accounts", label: "บัญชี Google", emoji: "🔗", tone: "pink" },
   { href: "/rubrics", label: "เกณฑ์การตรวจ", emoji: "🎯", tone: "lavender" },
   { href: "/reports", label: "คะแนนและรายงาน", emoji: "📊", tone: "mint" },
+  { href: "/exports", label: "ส่งออกคะแนนรายห้อง", emoji: "📤", tone: "yellow" },
   { href: "/history", label: "ประวัติการตรวจ", emoji: "🕒", tone: "rose" },
   { href: "/settings", label: "ตั้งค่าบัญชี", emoji: "⚙️", tone: "lavender" },
 ];

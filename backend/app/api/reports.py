@@ -11,6 +11,7 @@ from backend.app.core.database import get_db
 from backend.app.models.models import (
     Assignment,
     ClassroomAssignment,
+    GoogleClassroom,
     GradingDetail,
     GradingResult,
     RubricVersion,
@@ -21,6 +22,8 @@ from backend.app.models.models import (
 from backend.app.services.export_service import (
     generate_class_report_csv,
     generate_class_report_excel,
+    generate_classroom_gradebook_csv,
+    generate_classroom_gradebook_excel,
     generate_individual_report_pdf,
 )
 
@@ -315,4 +318,156 @@ def export_individual_pdf(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="student_report_{result_id[:8]}.pdf"'},
+    )
+
+
+def _build_classroom_gradebook_data(
+    db: Session,
+    owner_user_id: str,
+    classroom_id: str,
+) -> tuple[str, list[dict], list[dict], dict[str, list[dict]]]:
+    """Aggregate all graded assignments & students for a single Google Classroom room."""
+    gc = (
+        db.query(GoogleClassroom)
+        .filter(GoogleClassroom.id == classroom_id, GoogleClassroom.owner_user_id == owner_user_id)
+        .first()
+    )
+    if not gc:
+        raise HTTPException(status_code=404, detail="ไม่พบห้องเรียนที่ระบุ")
+
+    room_label = gc.name or "Classroom"
+    if gc.section and gc.section.strip() and gc.section.strip() not in room_label:
+        room_label = f"{room_label} ({gc.section.strip()})"
+    if gc.room and gc.room.strip() and gc.room.strip() not in room_label:
+        room_label = f"{room_label} • ห้อง {gc.room.strip()}"
+
+    ca_list = (
+        db.query(ClassroomAssignment)
+        .filter(
+            ClassroomAssignment.owner_user_id == owner_user_id,
+            ClassroomAssignment.google_classroom_id == gc.id,
+        )
+        .order_by(ClassroomAssignment.created_at.asc())
+        .all()
+    )
+    ca_ids = [c.id for c in ca_list]
+    local_ids = [c.local_assignment_id for c in ca_list if c.local_assignment_id]
+
+    assign_q = db.query(Assignment).filter(
+        Assignment.owner_user_id == owner_user_id,
+        Assignment.deleted_at.is_(None),
+    )
+    all_assigns = assign_q.order_by(Assignment.created_at.asc()).all()
+    room_assigns = [
+        a for a in all_assigns
+        if (a.classroom_assignment_id and a.classroom_assignment_id in ca_ids) or (a.id in local_ids)
+    ]
+
+    assignments_meta: list[dict] = []
+    per_assignment_rows: dict[str, list[dict]] = {}
+    students_map: dict[str, dict] = {}
+
+    for a in room_assigns:
+        report_data = _build_class_report_data(db, owner_user_id, a.id, sort_by="seat")
+        a_rows = report_data["rows"]
+        if not a_rows:
+            continue
+        a_rows_sorted = sorted(a_rows, key=lambda r: str(r.get("student_name") or ""))
+        actual_max = float(a_rows_sorted[0].get("max_score") or a.max_score or 0)
+        assignments_meta.append({
+            "assignment_id": a.id,
+            "title": a.title,
+            "max_score": actual_max,
+            "graded_count": len(a_rows_sorted),
+            "average_score": report_data["summary"]["average_score"],
+            "passed_count": report_data["summary"]["passed_count"],
+        })
+        per_assignment_rows[a.id] = a_rows_sorted
+        for r in a_rows_sorted:
+            sname = str(r.get("student_name") or "-").strip()
+            skey = sname.lower()
+            if skey not in students_map:
+                students_map[skey] = {"student_name": sname, "scores": {}}
+            students_map[skey]["scores"][a.id] = float(r.get("final_score") or 0.0)
+
+    student_rows = sorted(students_map.values(), key=lambda x: x["student_name"])
+    return room_label, assignments_meta, student_rows, per_assignment_rows
+
+
+@router.get("/classrooms/summary")
+def list_classroom_export_summaries(
+    current_teacher: User = Depends(get_current_teacher),
+    db: Session = Depends(get_db),
+):
+    """List every Classroom room with its graded assignments ready for per-room Excel/CSV export."""
+    classrooms = (
+        db.query(GoogleClassroom)
+        .filter(GoogleClassroom.owner_user_id == current_teacher.id)
+        .order_by(GoogleClassroom.name.asc())
+        .all()
+    )
+    out = []
+    for gc in classrooms:
+        room_label, assignments_meta, student_rows, _ = _build_classroom_gradebook_data(
+            db, current_teacher.id, gc.id
+        )
+        if not assignments_meta:
+            continue
+        total_max = round(sum(float(a["max_score"]) for a in assignments_meta), 2)
+        out.append({
+            "classroom_id": gc.id,
+            "classroom_name": room_label,
+            "section": gc.section,
+            "room": gc.room,
+            "total_students": len(student_rows),
+            "total_assignments": len(assignments_meta),
+            "total_max_score": total_max,
+            "assignments": assignments_meta,
+        })
+    return {"classrooms": out}
+
+
+@router.get("/classrooms/{classroom_id}/export/excel")
+def export_classroom_excel(
+    classroom_id: str,
+    current_teacher: User = Depends(get_current_teacher),
+    db: Session = Depends(get_db),
+):
+    room_label, assignments_meta, student_rows, per_assignment_rows = _build_classroom_gradebook_data(
+        db, current_teacher.id, classroom_id
+    )
+    if not assignments_meta:
+        raise HTTPException(status_code=400, detail="ยังไม่มีผลตรวจคะแนนสำหรับห้องเรียนนี้")
+    content = generate_classroom_gradebook_excel(
+        classroom_name=room_label,
+        assignments_meta=assignments_meta,
+        student_rows=student_rows,
+        per_assignment_rows=per_assignment_rows,
+    )
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="gradebook_{classroom_id[:8]}.xlsx"'},
+    )
+
+
+@router.get("/classrooms/{classroom_id}/export/csv")
+def export_classroom_csv(
+    classroom_id: str,
+    current_teacher: User = Depends(get_current_teacher),
+    db: Session = Depends(get_db),
+):
+    _, assignments_meta, student_rows, _ = _build_classroom_gradebook_data(
+        db, current_teacher.id, classroom_id
+    )
+    if not assignments_meta:
+        raise HTTPException(status_code=400, detail="ยังไม่มีผลตรวจคะแนนสำหรับห้องเรียนนี้")
+    content = generate_classroom_gradebook_csv(
+        assignments_meta=assignments_meta,
+        student_rows=student_rows,
+    )
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="gradebook_{classroom_id[:8]}.csv"'},
     )
